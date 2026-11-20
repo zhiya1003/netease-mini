@@ -1,0 +1,4393 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Net;
+using System.Text;
+using System.Threading;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Interop;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Media.Effects;
+using System.Windows.Media.Imaging;
+using System.Windows.Shapes;
+using System.Windows.Threading;
+using Path = System.Windows.Shapes.Path;
+
+namespace Mini
+{
+    // All numbers below are DIP == Folia's CSS px. There is deliberately NO scale factor:
+    // WPF lays out in DIP and Windows multiplies by dpi/96, so 602x184 DIP becomes
+    // 753x230 physical at 125%. See CONTRACT v1.2 item 0 (DPI 铁律).
+    public sealed class Ui
+    {
+        public const double WinW = 602, WinH = 184;
+        public const double CardW = 594, CardH = 176, Gutter = 4;
+        public const double SleeveW = 174, StripW = 178, FaceW = 420, Radius = 18;
+        public const double StageH = 124;
+        // ---- bands measured off folia-753.png (physical px; card interior = y5..224, x5..747)
+        // idle:  title ink 27..37 | big lyric 61..79 | sub lyric 99..112 | progress LINE 204..205
+        // window-space DIP = physical/1.25, card-space DIP = window - Gutter(4).
+        // 缩小态(idle+sleeve): cover(4,4,176,176) row(200,15,<=257,22) lyric(200,44,376)
+        //                      line box(200,156,376,16) track(200,163,376,2) deck/tools hidden
+        // 放大态(lit):        thumb(200,15,22,22) row(231,15) line box(200,122,376,16) track(200,128.5,376,3)
+        //                      knob 9x9 transport(324,137,128,36) keys(464,141,118,28) tools(506,14,76,24)
+        // card-space DIP = window DIP - Gutter(4).
+        public const double IdleTitleTop = 11;              // window row y=15
+        public const double IdleLyricTop = 36;              // measured: WPF ink centre = top+16.2 -> card 52.2 (folia 52.0)
+        public const double IdleSubTop = 69;                // 副行 = data-kind=next; ink centre card 80.4 (folia 80.0)
+        public const double IdleBarTop = 150.4;             // D4: window line box y=154.4 -> track at dip 161.4..163.4, measured LINE band 163..164 == Folia
+        public const double IdleTextLeft = 196, IdleTextRight = 22;   // window x=200, box 376 wide
+        public const double IdleRowW = 257;
+        public const double LineBoxH = 16;
+        public const double ExpCoverScale = 0.125;          // 176 -> 22 DIP thumb (radius 48 src -> 6 visual)
+        public const double ExpCoverLeft = 196, ExpCoverTop = 11;
+        public const double ExpTitleTop = 11, ExpTitleLeft = 227;     // lit row(231,15)
+        public const double ExpLyricTop = 36, ExpSubTop = 69;
+        public const double ExpBarTop = 118;                // window line box y=122 (translateY -34)
+        public const double ExpTextLeft = 196, ExpTextRight = 22;
+        public const double ToolZoneLeft = 502;             // lit row stops before tools(506,14,76,24)
+        public const double RowCentre = 151;        // hover: time + icon row centre
+        // Folia remote.css: song row 11.5/22, lyric hero 20/26, secondary line 13/19.
+        public const double TitleSize = 11.5, ArtistSize = 11.5, LyricSize = 20, SubSize = 13;
+        // USER 2026-11-10 #6 "丝滑": the hover had FOUR unsynchronised clocks - paper clip 300, cover 300 in /
+        // 560+60 out, progress bar 440+120 out, icon fade 220+80 in. Everything stopped at a different time,
+        // which reads as loose, and the exit was 800ms late then 620ms long. One clock now, matched to the
+        // Folia recording (card edge: ~200ms in, ~300ms out).
+        // Measured off the user's Folia recording, per-pixel, frame by frame:
+        //   IN  (idle -> lit):   card edge 60 -> 110 -> 202 -> 240 px inside ~150..180 ms  (fast, short tail)
+        //   OUT (lit -> idle):   220 -> 160 -> 118 -> 96 -> 84 -> 76 -> 70 -> 68 -> 64 -> 62 px over ~380 ms
+        //                        i.e. the last 20 px take 200 ms - a long soft settle, never an abrupt stop.
+        // That asymmetry is what reads as "comfortable"; the previous 200/280 had the exit too short.
+        // #7c: with the layered window occasionally taking ~25ms for a frame, a 210ms move puts ~35px into
+        // that one frame. 260ms spreads the same distance over ~15 frames, so the worst single step drops to
+        // ~28px - the eye reads px-per-frame, not total duration, and Folia's own CSS enters at .3s.
+        public const double LitInMs = 260;                  // hover-in: paper clip + cover morph + bar + icons
+        public const double LitOutMs = 380;                 // hover-out: same four, same clock (Folia's settle)
+        public const double LitLeaveMs = 260;               // data-lit hold after the pointer leaves (was 800)
+        public const double SongLineTop = 11, SongLineLeft = 53;
+        public const double SongCardTop = 35, SongCardLeft = 94, SongCardRight = 22;
+        public const double LineTop = 118, DeckTop = 127, DeckH = 49;
+        public const double ActionsTop = 46, ActionsH = 32;
+        public const double Pad = 22;                       // stage/lyric/line horizontal padding
+        public const double ToolsTop = 10, ToolsRight = 16, ToolSize = 24, ToolSvg = 13, ToolGap = 2;
+        public const double PlaySize = 36, SkipSize = 32, SmallSize = 28;
+        public const double SvgPlayPlaying = 21, SvgPlayPaused = 22, SvgSkip = 17, SvgSmall = 15, SvgMore = 16;
+        public const double TransportGap = 14, TransportTop = 24;   // transport centre, inside deck
+        public const double QueueW = 420, QueueLeft = 178, QueueSearchH = 40;
+        public const double QueueRowH = 36, QueueRowInner = 32, QueueRowNameW = 26;
+        public const double QueueBase = 46, QueueGap = 6, QueueMinH = 160;
+        public const int QueueMaxRows = 8;
+        public const double CoverBox = 176;                  // 176x176 cover body
+        // USER 2026-11-10 #2 / SPEC Folia .remote-paper: in lit the card is CLIPPED to inset(0 0 0 174px), so
+        // the sleeve strip stops existing instead of being painted over. SleeveW (174) and FaceW (420) are
+        // already the Folia numbers, so the cut is just "keep the face". cardHost-local x = 174 - Gutter.
+        public const double PaperCut = SleeveW - Gutter;      // 170
+        public const double PaperW = CardW - PaperCut;        // 424
+        public const double IdleProgressShift = 34;
+
+        private enum CoverState { Sleeve, Card, Line, Expanded }
+
+        private readonly Core core;
+        private Window win;
+        private IntPtr hwnd = IntPtr.Zero;
+        private bool rectFailLogged;
+        private bool paperNarrow;            // lit: the card is clipped to the 420 DIP face (no sleeve strip)
+        // /ctl/animprobe: log the clip rect straight off CompositionTarget.Rendering, i.e. one line per
+        // composition frame. This is the only way to tell "drops frames" from "right frames, wrong rhythm".
+        private int animProbe;
+        private long animProbeT0;
+        private EventHandler animProbeHook;
+        private RectangleGeometry paperFace;  // animated "face window" inside the rounded outline
+        private int dpi = 96;
+        private double phys = 1.0;             // physical px per DIP, hit-testing only
+        private string theme = "dark";
+        private string coverMode = "auto";     // auto | sleeve | card | line
+        private CoverState coverState = CoverState.Sleeve;
+        private bool queueOpen;
+        private bool hover;                     // == data-lit (SPEC-remote-motion): lit group visible
+        private bool pointerInside;
+        private bool tabFocusSeen;              // :focus-visible only after a real Tab interaction
+        private int litOverride = -1;           // /ctl/lit:on|off test hook, -1 = follow the pointer
+        private long lastInsideTicks;
+        private int hoverInCount, hoverOutCount;
+        private bool hoverBusy;                 // a hover animation is in flight
+        private TextBlock timeTb;               // time run container (hover only)
+        private Border coverGhost;              // low-contrast placeholder frame
+        private double queueH = 0;             // current expansion (DIP), 0 = closed
+        private bool queueDown = true;
+        private bool transparentNow;
+        private DispatcherTimer poll;
+        private long morphUntilTicks = 0; private double tgtTx = 0, tgtTy = 0, tgtSc = 1;
+        private long lastPollTicks;                        // R1: proof the 80ms judge is actually ticking
+
+        // ---- L2 (latency brief): UI-thread heartbeat -------------------------------------------------
+        // A 100ms DispatcherTimer that does nothing but stamp its own fire time into a ring buffer. The gap
+        // between two stamps is the time the UI thread actually took to come back, so "the card freezes on a
+        // track change" becomes a number (uiGapMaxMs in /ctl/dbg-pointer) instead of a feeling. Diagnostic
+        // only: it never paints, never touches the inside/lit judge, and it is deliberately NOT stopped by
+        // StopPoll - a freeze while the card is hidden is still a freeze.
+        private DispatcherTimer heart;
+        private readonly long[] heartStamps = new long[512];   // 512 x ~100ms = ~51s of history
+        private int heartPos;
+        private int heartCount;
+        private long heartTicks;
+
+        // ---- L3 (latency brief): hover-latency stamps (evidence, never a decision) -------------------
+        // The judge is untouched: ComputeLit() still runs on the FIRST tick that sees inside=true and
+        // SetLit() still applies it on that same tick. These stamps only record when the pointer arrived and
+        // when lit was applied, so the gap between them is readable as litLatencyMs.
+        private long insideStartTicks;
+        private long litAppliedTicks;
+        private bool prevCursorInside;
+
+        // ---- L4 (latency brief): the progress bar's own clock ---------------------------------------
+        private double barRatioLast = -1;
+        private long barPaintTicks;
+        private bool renderedSeen = false;                 // N4: ContentRendered has fired at least once
+        private bool layoutForced = false;                   // N2: dbg-layout ran a Measure/Arrange on the hidden tree
+        private readonly Dictionary<UIElement, double> litTarget = new Dictionary<UIElement, double>();   // N1: intended opacity
+        private bool timersBuilt = false;
+        private DispatcherTimer posSave;
+        private DispatcherTimer dumpTimer;
+
+        // visuals
+        private Canvas surface, cardCanvas;
+        private Border cardHost, ring;
+        private Border coverHost, coverStroke;
+        private Image coverImg;
+        private TextBlock coverBlank;
+        private TranslateTransform coverTranslate;
+        private ScaleTransform coverScale;
+        private TextBlock titleTb, artistTb, lyricTb, lyricSubTb, idleTb;
+        private TextBlock lyricOldTb;
+        private TranslateTransform lyricShift, lyricOldShift;
+        private string lastLyric = "";
+        private System.Windows.Documents.Run timeRun, timeTotalRun;
+        private Canvas barCanvas;
+        private TranslateTransform barShift;        // render-only Y motion: no layout pass per animation frame
+        private Rectangle trackRect, fillRect;
+        private Ellipse knob;
+        private Border btnPrev, btnPlay, btnNext, btnLike, btnLoop, btnQueue, btnMore;
+        private Border btnTheme, btnPin, btnClose;
+        private Ellipse loopDot;
+        private Grid actionsHost;
+        private Border queuePanel;
+        private TranslateTransform queuePanelRender;
+        private bool shifting;
+        private DispatcherTimer autoQueue;
+        private long seekGuardTicks;
+        private StackPanel queueList;
+        private TextBox searchBox;
+        private Border washHost;
+        private Image washImg;
+        private Image washImg2;
+        private string lastWashUrl = null;
+
+        private Grid washLayer;                    // D1+D3: wash / shade / veil all span the whole card
+
+        private Border washShade;                  // .remote-wash-shade (was findByName("shadeHost"))
+
+        private Border washVeil;                   // D1 adaptive scrim, hue taken from the cover
+        private Border shadowHost, shadowShape;    // S1: window-level carrier of the css box-shadow (see BuildShadowCarrier)
+
+        private Color veilColor;
+
+        private double veilAlpha;
+
+        private int veilIter;
+
+        private string veilReason = "";
+        private string veilKey = "";                      // url|theme already measured -> no per-poll re-render
+        private double lastWashMeasured = -1;              // last content-region luma the veil loop saw
+
+        private DispatcherTimer veilTimer;
+
+        private long queueOpenTicks;               // D2: fMe anchor starts at OPEN, not at a stale hover
+        private long queueHoverTicks;              // R3: last moment the pointer was inside the card
+        private long queueSettledTicks;            // R3: when the panel reached its full height (anchor re-stamp)
+        private long queueCollapseTicks;              // M3: last auto-collapse write (winrect must agree)
+        private long queueCollapseSince = -1;         // M3: the since= value of that line, same units
+        private string queueStateSource = "-";        // M3: what last flipped queueOpen
+
+        private bool cursorInsideNow;              // D2: fresh 80ms sample of "pointer is on the card"
+
+        private Grid queueGrid;                    // D3: masked so queue rows cannot square the corners
+
+        // /ctl/wash:r=<radius>,s=<sat>,stage=pre|post -- calibration knobs for the wash colour pipeline
+        // (W1/W2 of the "wash eats the cover colour" report). The defaults are exactly what the old code
+        // hard-coded (Radius 76, saturate x1.2, boost applied to the source BEFORE the live blur), so an
+        // untouched build paints the same pixels; satCache is keyed by the spec so a scan never reads a
+        // stale bitmap. The one behaviour fix that is NOT gated behind a knob is the crossfade tail in
+        // ApplyWashSource, which used to hand the RAW (unsaturated) bitmap back to the wash.
+        // Shipped values, chosen by the calibration table in docs\STATUS.md section J (same track, same
+        // idle/sleeve state, same wash theme, every row stamped with its own grab time):
+        //   radius  24 beats 76 on colour retention (0.337 vs 0.285 at s=1.2) and the CSS blur(38px) the
+        //           comment quoted is NOT WPF radius 76 - the x2 guess was never measured.
+        //   stage   "post" is the order the CSS chain actually runs (blur, then saturate). Measured: the
+        //           two orders come out equal within noise (r24/s1.2: pre 5.37 vs post 5.37; r76: pre
+        //           4.53 vs post 4.57), because both are linear ops - so the order is NOT the culprit, the
+        //           coefficient and the dropped boost were. Post is kept because it is the reference order.
+        //   sat     1.8 is the coefficient that clears the 0.42 retention floor at radius 24 (0.536).
+        // Shipped after the G-grid (docs\STATUS.md section K): the saturation goes back to the CSS literal
+        // x1.2 and the D1 target goes back into the Folia range, because the geometry fix (shade on the
+        // wash host's inset box) is what actually moved colour retention onto Folia's number - at the old
+        // r=24/s=1.8/t=60 we were 34% MORE colourful than Folia, which is the other half of "not identical".
+        //   r=50 : measured retention 0.477 on 越来越不懂 vs Folia's own 0.468 (2% apart), and the box luma
+        //          79.89 - the closest any tested cell gets to Folia's 71.44 while the internal wash target
+        //          stays inside 63..70. r=24 matches retention (0.469) but sits at 88.4 luma; r=38 (the
+        //          literal CSS number) overshoots to 0.550.
+        //   s=1.2: CSS saturate(1.2), no invented boost.
+        //   post : CSS order, blur then saturate.
+        private double washRadius = 50;
+        private double washSat = 1.2;
+        private string washStage = "post";
+
+        private static readonly Dictionary<string, ImageSource> satCache = new Dictionary<string, ImageSource>();
+        private static readonly List<string> satOrder = new List<string>();   // B2: insertion order for the wash cache cap
+        private const int SatCacheMax = 48;
+        private static void SatPut(string key, ImageSource v)                 // caller holds satGate
+        {
+            if (v == null) return;
+            int at = satOrder.IndexOf(key);
+            if (at >= 0) satOrder.RemoveAt(at);
+            satOrder.Add(key);
+            satCache[key] = v;
+            while (satOrder.Count > SatCacheMax) { string old = satOrder[0]; satOrder.RemoveAt(0); satCache.Remove(old); }
+        }
+        // L2: satCache is now read/written from the UI thread AND from the pool thread that bakes the wash,
+        // so every access goes through this gate. washBakePending keeps one bake per spec in flight.
+        private static readonly object satGate = new object();
+        private readonly HashSet<string> washBakePending = new HashSet<string>();
+        private int uiThreadId;
+
+        private static readonly Dictionary<string, ImageSource> imgCache = new Dictionary<string, ImageSource>();
+        private static readonly Dictionary<string, byte[]> imgBytes = new Dictionary<string, byte[]>();
+        private static readonly List<WebClient> pendingWc = new List<WebClient>();   // D3: keep alive until callback
+        private static readonly HashSet<string> imgPending = new HashSet<string>();      // D3: one in-flight fetch per URL
+        // B2/B3 fix (2026-11-10): these caches grew forever and were touched from the pool thread that
+        // downloads and the UI thread that decodes with no lock at all. Every access now goes through the
+        // helpers below: one gate, one insertion order, one hard cap. Eviction drops bytes AND bitmap.
+        private static readonly object imgGate = new object();
+        private static readonly List<string> imgOrder = new List<string>();
+        private static readonly Dictionary<string, int> imgRetry = new Dictionary<string, int>();
+        private const int ImgCacheMax = 24;
+        private static bool CacheGetBytes(string u, out byte[] b) { lock (imgGate) { return imgBytes.TryGetValue(u, out b); } }
+        private static bool CacheGetImage(string u, out ImageSource s) { lock (imgGate) { return imgCache.TryGetValue(u, out s); } }
+        private static void CachePutBytes(string u, byte[] b) { lock (imgGate) { imgBytes[u] = b; CacheTouch(u); } }
+        private static void CachePutImage(string u, ImageSource s) { lock (imgGate) { imgCache[u] = s; CacheTouch(u); } }
+        private static void CacheDrop(string u) { lock (imgGate) { imgBytes.Remove(u); imgCache.Remove(u); imgOrder.Remove(u); } }
+        private static void CacheTouch(string u)              // caller holds imgGate
+        {
+            int at = imgOrder.IndexOf(u);
+            if (at >= 0) imgOrder.RemoveAt(at);
+            imgOrder.Add(u);
+            while (imgOrder.Count > ImgCacheMax)
+            {
+                string old = imgOrder[0];
+                imgOrder.RemoveAt(0);
+                if (old != u) { imgBytes.Remove(old); imgCache.Remove(old); }
+            }
+        }
+        private readonly List<Border> queueRowHits = new List<Border>();
+        private readonly Dictionary<string, Border> hits = new Dictionary<string, Border>();
+        private readonly Dictionary<Border, string> glyphKeys = new Dictionary<Border, string>();
+        private string queueVisualKey = "";
+        private double seekPreview = -1;
+
+        public Dictionary<string, Point> Hotspots = new Dictionary<string, Point>();
+        public Window Handle { get { return win; } }
+        public IntPtr Hwnd { get { return hwnd; } }
+        public bool InteractiveNow { get { return !transparentNow; } }
+
+        public Ui(Core c)
+        {
+            core = c;
+            theme = c.Cfg.Theme;
+            coverMode = c.Cfg.CoverMode;
+            queueDown = c.Cfg.QueueDir != "up";
+        }
+
+        // ---------------------------------------------------------------- palette
+        private bool IsLight() { return theme == "light"; }
+        private Color Ink() { return IsLight() ? Color.FromRgb(17, 17, 22) : Color.FromRgb(255, 255, 255); }       // SPEC 255,255,255
+        private Color Paper() { return IsLight() ? Color.FromRgb(0xff, 0xff, 0xff) : Color.FromRgb(0x11, 0x11, 0x14); }
+        private Brush A(double alpha) { Color k = Ink(); return new SolidColorBrush(Color.FromArgb((byte)Math.Round(alpha * 255), k.R, k.G, k.B)); }
+        private Brush Aop(double alpha, Color baseCol) { return new SolidColorBrush(Color.FromArgb((byte)Math.Round(alpha * 255), baseCol.R, baseCol.G, baseCol.B)); }
+        private Brush Solid(Color c) { return new SolidColorBrush(c); }
+        private Brush RedBrush() { return new SolidColorBrush(Color.FromArgb(0xFF, 0xff, 0x4d, 0x5e)); }           // #ff4d5e
+
+        // wash = blurred cover over a dark base; dark = 纯深; light = 纯浅 (palette cycles these 3)
+        private bool WashOn() { return theme == "wash" || theme == "cover"; }
+
+        private Brush CardBrush()
+        {
+            switch (theme)
+            {
+                case "light": return new LinearGradientBrush(Color.FromRgb(0xfb, 0xfa, 0xf8), Color.FromRgb(0xf3, 0xf2, 0xee), 90);
+                case "transparent": return Solid(Color.FromArgb(0xcc, 0x0d, 0x0d, 0x11));
+                case "cover":
+                case "wash": return Solid(Color.FromRgb(0x0d, 0x0d, 0x10));
+                default: return new LinearGradientBrush(Color.FromRgb(0x18, 0x18, 0x1c), Color.FromRgb(0x0f, 0x0f, 0x12), 90);
+            }
+        }
+        private Brush StrokeBrush()
+        {
+            if (theme == "transparent") return Solid(Color.FromArgb(0x1a, 0xff, 0xff, 0xff));    // inset 0 0 0 1px #ffffff1a
+            if (theme == "light") return Solid(Color.FromArgb(0x17, 0x11, 0x11, 0x16));           // #11111617
+            return A(0.08);                                                                      // inset 0 0 0 1px rgba(ink,.08)
+        }
+        private double ShadowOpacity()
+        {
+            if (theme == "light") return 0x2e / 255.0;                                            // #0000002e
+            return 0x73 / 255.0;                                                                  // #00000073
+        }
+        private Brush Hover() { return IsLight() ? Solid(Color.FromArgb(0x14, 0x11, 0x11, 0x16)) : Solid(Color.FromArgb(0x14, 0xff, 0xff, 0xff)); }
+
+        // ---------------------------------------------------------------- build
+        public void Build()
+        {
+            win = new Window();
+            dpi = ResolveDpi(IntPtr.Zero);
+            // N4: before the first render there is no monitor affinity, and both
+            // GetDpiForWindow(never-shown HWND) and GetDpiForSystem answer with the PRIMARY monitor
+            // (96 here) while the card lives on the 125% screen. Seed from the DPI the position was
+            // written with, then let the real window DPI confirm/replace it once we render.
+            int sd = Position.StoredDpi();
+            if (sd >= 96 && sd <= 480 && sd != dpi) { dpi = sd; Log.W("dpi seeded from stored position dpi=" + sd); }
+            phys = dpi / 96.0;
+            win.WindowStyle = WindowStyle.None;
+            win.AllowsTransparency = true;
+            win.ResizeMode = ResizeMode.NoResize;
+            win.ShowInTaskbar = core.Cfg.Taskbar;
+            win.Topmost = core.Cfg.Topmost;
+            win.Background = Brushes.Transparent;
+            win.Title = "NCM Mini";
+            win.UseLayoutRounding = true;
+            win.SnapsToDevicePixels = true;
+            TextOptions.SetTextFormattingMode(win, TextFormattingMode.Display);
+            win.Width = WinW;                    // 602 DIP, no scale maths
+            win.Height = WinH;                   // 184 DIP
+            win.WindowStartupLocation = WindowStartupLocation.Manual;
+            win.ShowActivated = false;
+
+            surface = new Canvas();
+            surface.Width = WinW;
+            surface.Height = WinH;
+            win.Content = surface;
+
+            WireOnce();
+            // R1: EnsureHandle() gives us an HWND without showing anything, so /ctl/dbg-pointer
+            // can report a real rect and the 80ms judge can tick even for a --hide cold start.
+            try { new WindowInteropHelper(win).EnsureHandle(); } catch (Exception eh) { Log.W("ensurehandle " + eh.Message); }
+            GrabHwnd();
+            BuildVisuals();
+            RestorePos();                                            // N4: place the card (while still hidden) so rect/DPI are meaningful
+            BuildTimers("build");
+            Log.W("build dpi=" + dpi + " phys=" + phys.ToString("0.###", CultureInfo.InvariantCulture) + " winDip=" + WinW + "x" + WinH + " hwnd=" + hwnd + " pollOn=" + (poll != null && poll.IsEnabled));
+        }
+
+        private bool wired = false;
+        private void WireOnce()
+        {
+            if (wired) return;
+            wired = true;
+            win.PreviewKeyDown += delegate (object s, KeyEventArgs e)
+            {
+                if (e.Key == Key.Tab) tabFocusSeen = true;
+                else if (e.Key == Key.Escape)
+                {
+                    e.Handled = true;
+                    if (queueOpen) SetQueue(false);      // level 1: collapse the queue
+                    else Hide();                        // level 2: dismiss the remote
+                }
+            };
+            win.MouseLeftButtonDown += delegate (object s, MouseButtonEventArgs e)
+            {
+                tabFocusSeen = false;
+                if (e.ButtonState != MouseButtonState.Pressed) return;
+                try { win.DragMove(); } catch { }
+                SchedulePosSave();
+            };
+            // MOUSE-INPUT DIAGNOSTIC: tunnel, handledEventsToo -> fires even if a child already ate the event.
+            win.AddHandler(UIElement.PreviewMouseDownEvent, new MouseButtonEventHandler(DiagPreviewDown), true);
+            win.ContentRendered += delegate { renderedSeen = true; s_renderedForDpi = true; GrabHwnd(); RestorePos(); Refresh(); DumpRect(); };
+            win.SizeChanged += delegate { DumpRect(); };
+            // B4 fix (2026-11-10): SchedulePosSave is debounced, DumpRect was not - dragging the card wrote
+            // winrect.json once per WM_MOVE (60..100 disk writes/s, all on the UI thread, ~1.5KB each).
+            win.LocationChanged += delegate { SchedulePosSave(); ScheduleDumpRect(); };
+            win.StateChanged += delegate { DumpRect(); };
+            win.IsVisibleChanged += delegate (object s, DependencyPropertyChangedEventArgs e)
+            {
+                if ((bool)e.NewValue) StartPoll("visible");
+                else StopPoll("hidden");
+            };
+            win.Closing += delegate { StopPoll("closing"); };
+            // USER 2026-11-10 #6: the 80ms poll was the whole enter latency (measured: pointer arrived at
+            // t=0, "paper cut" fired at t=100ms, i.e. the animation only STARTED after a poll tick). These two
+            // events re-judge immediately; the poll stays as the safety net (its 800ms hold, click-through and
+            // the queue timers all still run on it).
+            win.MouseEnter += delegate { try { if (!hover) UpdateClickThrough(); } catch { } };
+            win.MouseLeave += delegate { try { if (hover) UpdateClickThrough(); } catch { } };
+        }
+
+        private void BuildVisuals()
+        {
+            cardHost = new Border();
+            cardHost.Width = CardW;
+            cardHost.Height = CardH;
+            cardHost.CornerRadius = new CornerRadius(Radius);
+            cardHost.Background = CardBrush();
+            // R1/S1 (rollback brief): the F1 note below was right about the flag and wrong about the effect's
+            // reach. A WPF Effect paints its output INSIDE the bounds of the element that owns it, so a
+            // DropShadowEffect on the 594x176 cardHost can never land in the 4 DIP gutter - measured there:
+            // 1..2 luma, which is antialiasing, not projection. The previous repair answered that by FILLING the
+            // gutter with the wash (cardCanvas clip = window rect minus four corner wedges, plus a washVeil
+            // inflated by the gutter). That is paint, not projection, and it is exactly the second 602x184
+            // contour, stepped against the 594x176 card arc, that the user photographed. Rolled back: the gutter
+            // carries the projection and nothing else (BuildShadowCarrier), and every wash layer stops at the
+            // card outline again.
+            cardHost.ClipToBounds = false;
+            cardHost.Effect = null;   // S1: the css box-shadow moved to shadowHost, which has gutter-sized room
+            ring = new Border();
+            ring.CornerRadius = new CornerRadius(Radius);
+            ring.BorderThickness = new Thickness(1);
+            ring.BorderBrush = StrokeBrush();
+            cardCanvas = new Canvas();
+            cardCanvas.Width = CardW;
+            cardCanvas.Height = CardH;
+            // D3: the 18px card outline is the ONLY opaque area of the whole window. A WPF Canvas never
+            // clips to its parent Border's CornerRadius, so the square wash/shade used to paint dark
+            // triangles into the transparent corners (user report).
+            // K1 (brief-9): the geometry OPACITY MASK could not be the clip. A brush used as an
+            // OpacityMask is mapped to the element's RENDER bounds, and washHost/washShade overflow those
+            // bounds by -70.4/-168, so the 594x176 rounded rect got stretched over the 762x316.8 inset box:
+            // the arc moved off-card and all four corners painted square (live silhouette: first opaque x
+            // = 6px at EVERY row dy6..dy30, i.e. an effective radius of ~0, while an r=18DIP arc needs
+            // dy6:15..19 dy10:8..11 dy14:4..6). Isolated in D:\ncm-re2\masktest\MT.cs: mask-only + an
+            // overflowing child => square corners, mask-only with an in-bounds child => arc, Clip geometry
+            // + overflowing child => arc. A Clip lives in the element's own coordinate space, so it cannot
+            // be inflated by a child's overflow. Clip also fixes the dark-triangle bug the mask was
+            // supposed to fix, because it clips the overflow itself.
+            ApplyCardClip();
+            // no Clip here: an element with a Clip inside a DropShadowEffect subtree renders empty.
+            ring.Child = cardCanvas;
+            cardHost.Child = ring;
+            // clip the CONTENT (cardCanvas); cardHost already carries a DropShadowEffect and an
+            // element with both Effect and Clip renders empty in WPF.
+            Canvas.SetLeft(cardHost, Gutter);
+            Canvas.SetTop(cardHost, Gutter);
+            // S1: the carrier has to be UNDER the card, so it is parented first.
+            BuildShadowCarrier();
+            surface.Children.Add(cardHost);
+
+            BuildWash();
+            BuildCover();
+            BuildStage();
+            BuildProgress();
+            BuildDeck();
+            BuildTools();
+            BuildActionsHost();
+            BuildQueuePanel();
+            LayoutTextForState();
+            ApplyTheme();
+            ApplyIdleHint();
+            ApplyHoverState(false);   // once at startup; SetLit owns later transitions, not the 4 Hz state pump
+            Microsoft.Win32.SystemEvents.SessionSwitch += delegate (object ss, Microsoft.Win32.SessionSwitchEventArgs ev) { if (ev.Reason == Microsoft.Win32.SessionSwitchReason.SessionUnlock && win != null) { try { win.Dispatcher.BeginInvoke(new Action(delegate { HealRest(); win.InvalidateVisual(); if (cardCanvas != null) cardCanvas.InvalidateVisual(); })); } catch { } } };
+            core.ClickHook = delegate (string k)
+            {
+                // /click lands on an HTTP worker thread; the visual tree needs the dispatcher.
+                if (!win.Dispatcher.CheckAccess()) win.Dispatcher.BeginInvoke(new Action(delegate { Click(k); }));
+                else Click(k);
+                return true;
+            };
+            PositionQueue();
+        }
+
+        // V1 (brief-9): the wash AND the shade must cover the whole card in BOTH states.
+        // CSS .remote-wash is inset:-70.4 -168 -70.4 6. That 6px left hand-off inset is never visible in
+        // Folia (sleeve: the 176 cover paints over it; lit: .remote-paper is clipped to inset(0 0 0 174px),
+        // so Folia's lit card starts at 174 and the strip is outside it). Our card keeps its full 594 DIP
+        // width in lit, so the strip stayed bare card base + veil and read ~24 luma against ~60 next to it.
+        // Left inset 0 covers x 0..594; top/bottom/right keep the CSS box, so the shade gradient mapping
+        // that section K measured is unchanged.
+        // V1b (brief-9): 0 would still leave the bake's edge band (about 3R = 150 DIP of clamped/blurred
+        // edge data) INSIDE the card, and the measured row showed it as a flat 83-luma plateau against a
+        // 72-luma right side (diff 11.3 > 8). The right side never shows its band because CSS overflows it
+        // by 168; overflowing the left by the same 168 puts the band off-card too. The visible slice then
+        // maps to cover u 0.18..0.82, which is what Folia's lit card actually shows (its paper clip keeps
+        // u 0.227..0.778) -- i.e. this is the Folia-equivalent mapping, not a new one.
+        private const double WashInsetL = -168, WashInsetT = -70.4, WashInsetR = -168, WashInsetB = -70.4;
+        private static double WashBoxW { get { return CardW - WashInsetL - WashInsetR; } }   // 762 DIP
+        private static double WashBoxH { get { return CardH - WashInsetT - WashInsetB; } }   // 316.8 DIP
+
+        private void BuildWash()
+        {
+            // .remote-wash inset -70.4 -168 -70.4 6 + blur(38px) saturate(1.2), then .remote-wash-shade
+            // inset:0 linear-gradient(#09090d75 -> #09090db3) (vertical: WPF angle 90 == top->bottom).
+            // All three layers live in ONE grid that spans the whole card: the sleeve boundary can never
+            // cut the wash (D3), and the D1 veil is measured over exactly the area the content region is.
+            washLayer = new Grid();
+            washLayer.Width = CardW;
+            washLayer.Height = CardH;
+            washLayer.IsHitTestVisible = false;
+
+            washHost = new Border();
+            washHost.HorizontalAlignment = HorizontalAlignment.Stretch;
+            washHost.VerticalAlignment = VerticalAlignment.Stretch;
+            washHost.Margin = new Thickness(WashInsetL, WashInsetT, WashInsetR, WashInsetB);   // V1: left 0
+            washHost.ClipToBounds = true;
+            ApplyWashHostEffect();                                     // CSS blur(38px); radius = /ctl/wash:r=
+            washImg = new Image();
+            washImg.Stretch = Stretch.Fill;                             // css background-size:100% 100%
+            washImg2 = new Image();
+            washImg2.Stretch = Stretch.Fill;
+            washImg2.Opacity = 0;
+            Grid wg = new Grid();
+            wg.Children.Add(washImg);
+            wg.Children.Add(washImg2);
+            washHost.Child = wg;
+            washLayer.Children.Add(washHost);
+
+            // G-geometry (parent ruling): the CSS .remote-wash-shade is inset:0 on the SAME box the wash
+            // occupies, i.e. the wash host's inset box (-70.4 -168 -70.4 6 => 768 x 316.8 DIP), not the
+            // 594x176 card. Spanning the card instead puts the card's top edge at the gradient's LIGHTEST
+            // stop (alpha 0.46); spanning the inset box puts it at ~0.513 and flattens the visible range to
+            // 0.513..0.647. Measured effect on the acceptance box (card y 48..96 DIP): alpha 0.553 -> 0.565,
+            // i.e. only ~2 luma - see docs\STATUS.md section K for the grid that proves it.
+            washShade = new Border();
+            washShade.Background = new LinearGradientBrush(Color.FromArgb(0x75, 0x09, 0x09, 0x0d), Color.FromArgb(0xb3, 0x09, 0x09, 0x0d), 90);
+            washShade.HorizontalAlignment = HorizontalAlignment.Stretch;
+            washShade.VerticalAlignment = VerticalAlignment.Stretch;
+            washShade.Margin = new Thickness(WashInsetL, WashInsetT, WashInsetR, WashInsetB);   // same inset box as washHost
+            washShade.Name = "shadeHost";
+            washLayer.Children.Add(washShade);
+
+            veilColor = Color.FromRgb(8, 8, 10);
+            washVeil = new Border();
+            washVeil.Background = new SolidColorBrush(veilColor);
+            washVeil.Opacity = 0;
+            washVeil.IsHitTestVisible = false;
+            washLayer.Children.Add(washVeil);
+
+            Canvas.SetLeft(washLayer, 0);
+            Canvas.SetTop(washLayer, 0);
+            washLayer.Visibility = WashOn() ? Visibility.Visible : Visibility.Collapsed;
+            cardCanvas.Children.Add(washLayer);
+        }
+
+        // ---------------------------------------------------------------- D1 wash luminance
+        // Folia's own idle wash measures 63..70 in the content region (x .34...95, y .2...8) whatever
+        // the cover; WPF has no CSS filter, so this is a measured closed loop: render the REAL composited
+        // wash (wash+shade+veil, no text, no cover) into a small RTB, average its luma over that region,
+        // then drive one hue-preserving veil (same H/S as the cover, V pushed to 6% for a bright cover /
+        // 62% for a dark one) until the measurement sits on 70. Every pass is logged.
+        // 70 -> 64: the acceptance box (x 300..700, y 60..120 on screen) reads ~20 luma ABOVE the
+        // washLayer-only region the D1 loop measures, because it sits high in the shade gradient and carries
+        // the lyric glyphs (idle-y: internal 69.95 vs box 90.49). At target 70 the box is always ~89-91, i.e.
+        // outside the 55..85 band no matter what the wash does. 64 is still inside the range the code comment
+        // measured on Folia's own idle wash (63..70) and inside this app's own band (55..85).
+        private const double WashTarget = 70.0;   // back inside the 63..70 range this app measured on Folia's own
+        // idle wash; the 60 that section J shipped was compensating for the missing colour boost, and once the
+        // geometry + CSS-literal saturation are in place it is no longer needed (and it pushed the D1 loop
+        // below Folia's own band).
+        // /ctl/wash:t=<n> calibration override for the veil target, -1 = the shipped WashTarget. The D1 loop
+        // holds the washLayer-only region at the target, while the acceptance box (x 300..700, y 60..120 on
+        // the screen) also carries the lyric glyphs and sits high in the shade gradient, so it reads ~20
+        // luma above the internal measurement (idle-y: internal 69.95 vs box 90.49). The override is what
+        // lets that offset be measured instead of guessed.
+        private double washTargetLive = -1;
+        private const double WashLo = 55.0;
+        private const double WashHi = 85.0;
+
+        private void AdaptWashStart(string reason, int firstDelayMs)
+        {
+            if (washVeil == null || !WashOn()) return;
+            if (washImg == null || washImg.Source == null) { Log.W("wash adapt skip reason=" + reason + " (no cover yet)"); return; }
+            string key = (lastWashUrl ?? "") + "|" + theme;
+            if (key == veilKey) return;                       // converged already for this cover+theme
+            veilKey = key;
+            veilReason = reason;
+            veilIter = 0;
+            // NOT reset to 0: pass 1 de-embeds whatever alpha is already live, so a track change
+            // converges without a visible brightening flash.
+            ScheduleVeilPass(firstDelayMs);
+        }
+
+        private void ScheduleVeilPass(int ms)
+        {
+            if (veilTimer == null)
+            {
+                veilTimer = new DispatcherTimer();
+                veilTimer.Tick += delegate { veilTimer.Stop(); VeilPass(); };
+            }
+            veilTimer.Stop();
+            veilTimer.Interval = TimeSpan.FromMilliseconds(ms);
+            veilTimer.Start();
+        }
+
+        private void VeilPass()
+        {
+            if (washVeil == null || !WashOn() || win == null || !win.IsVisible) return;
+            veilIter++;
+            double[] m = MeasureWashRegion();
+            if (m == null) { Log.W("wash adapt iter=" + veilIter + " measured=none reason=" + veilReason); return; }
+            double L = m[0];
+            lastWashMeasured = L;
+            double vl = Luma(veilColor);
+            double baseL = veilAlpha > 0.001 ? (L - vl * veilAlpha) / (1.0 - veilAlpha) : L;
+            if (baseL < 1) baseL = 1;
+            if (baseL > 254) baseL = 254;
+            double a = 0;
+            double WT = washTargetLive > 0 ? washTargetLive : WashTarget;
+            if (baseL > WT + 1.5)
+            {
+                veilColor = Tint(m[1], m[2], m[3], 0.06);
+                vl = Luma(veilColor);
+                a = (baseL - WT) / Math.Max(1.0, baseL - vl);
+                if (a > 0.86) a = 0.86;                 // cap: never paint the card flat
+            }
+            else if (baseL < WT - 1.5)
+            {
+                Color up = Tint(m[1], m[2], m[3], 0.62);
+                vl = Luma(up);
+                if (vl > baseL + 20.0)            // a black cover has no chroma to lift -> leave it alone
+                {
+                    veilColor = up;
+                    a = (WT - baseL) / (vl - baseL);
+                    if (a > 0.55) a = 0.55;
+                }
+            }
+            if (a < 0) a = 0;
+            washVeil.Background = new SolidColorBrush(veilColor);
+            bool changed = Math.Abs(a - veilAlpha) > 0.008;
+            veilAlpha = a;
+            washVeil.Opacity = a;
+            bool inBand = L >= WashLo && L <= WashHi;
+            Log.W("wash adapt iter=" + veilIter + " measured=" + F(L) + " veilOffBase=" + F(baseL) +
+                  " veil=" + a.ToString("0.000", CultureInfo.InvariantCulture) + " veilLuma=" + F(vl) +
+                  " accepted=" + inBand + " changed=" + changed + " reason=" + veilReason);
+            if ((!inBand || changed) && veilIter < 4) ScheduleVeilPass(90);
+        }
+
+        private static string F(double v) { return v.ToString("0.0", CultureInfo.InvariantCulture); }
+
+        // milliseconds ago the event happened; -1 when it never happened (winrect.json R3 fields)
+        private static double T(long ticks)
+        {
+            if (ticks == 0) return -1;
+            return (DateTime.UtcNow.Ticks - ticks) / (double)TimeSpan.TicksPerMillisecond;
+        }
+
+        // mean luma + mean rgb of the content region of the composited wash layers
+        private double[] MeasureWashRegion()
+        {
+            try
+            {
+                int w = 120, hh = 36;
+                RenderTargetBitmap rtb = new RenderTargetBitmap(w, hh, 96.0 * w / CardW, 96.0 * hh / CardH, PixelFormats.Pbgra32);
+                rtb.Render(washLayer);
+                byte[] px = new byte[w * hh * 4];
+                rtb.CopyPixels(px, w * 4, 0);
+                int x0 = (int)(w * 0.34), x1 = (int)(w * 0.95), y0 = (int)(hh * 0.20), y1 = (int)(hh * 0.80);
+                double sl = 0, sr = 0, sg = 0, sb = 0; int n = 0;
+                for (int y = y0; y < y1; y++)
+                    for (int x = x0; x < x1; x++)
+                    {
+                        int i = (y * w + x) * 4;
+                        int al = px[i + 3];
+                        if (al <= 8) continue;
+                        double b = px[i] * 255.0 / al, g = px[i + 1] * 255.0 / al, r = px[i + 2] * 255.0 / al;
+                        sl += 0.299 * r + 0.587 * g + 0.114 * b;
+                        sr += r; sg += g; sb += b; n++;
+                    }
+                if (n < 60) return null;
+                return new double[] { sl / n, sr / n, sg / n, sb / n };
+            }
+            catch (Exception e) { Log.W("wash measure fail " + e.GetType().Name + " " + e.Message); return null; }
+        }
+
+        private static double Luma(Color c) { return 0.299 * c.R + 0.587 * c.G + 0.114 * c.B; }
+
+        // uniform RGB scale == HSV hue + saturation preserved, value forced to v: a tint, never a grey
+        private static Color Tint(double r, double g, double b, double v)
+        {
+            double mx = Math.Max(r, Math.Max(g, b));
+            if (mx < 1) mx = 1;
+            double k = 255.0 * v / mx;
+            int ri = (int)Math.Round(Math.Min(255.0, Math.Max(0.0, r * k)));
+            int gi = (int)Math.Round(Math.Min(255.0, Math.Max(0.0, g * k)));
+            int bi = (int)Math.Round(Math.Min(255.0, Math.Max(0.0, b * k)));
+            return Color.FromRgb((byte)ri, (byte)gi, (byte)bi);
+        }
+
+        // D5: the CSS chain is "blur(38px) saturate(1.2)" -- the colour boost acts on the ALREADY
+        // blurred wash. One WPF element carries one Effect, so the two orders are expressed as:
+        //   stage=pre  : boost chroma on the source bitmap, live BlurEffect(radius) on the host (old code)
+        //   stage=post : bake the blur into a bitmap first, then boost chroma on the blurred pixels
+        // The order matters because the boost clamps at 0/255: pre-boost clips pixels the blur would
+        // have averaged back into range, so post-boost keeps more chroma for the same coefficient.
+        private void ApplyWashHostEffect()
+        {
+            if (washHost == null) return;
+            washHost.Effect = (washStage == "post") ? null : new BlurEffect { Radius = washRadius };
+        }
+
+        // instance method on purpose: the key carries the per-instance tuning fields
+        private string WashSpecKey(string url)
+        {
+            return url + "|stage=" + washStage + "|r=" + F(washRadius) + "|s=" + F(washSat);
+        }
+
+        // Bake the live blur into a bitmap at the DIP size the wash box is displayed at
+        // (CardW + 6 + 168 by CardH + 70.4 + 70.4), so Radius means the same pixels as before.
+        private BitmapSource BlurBake(BitmapSource src, double radius, int w, int hh)
+        {
+            try
+            {
+                // V1 (brief-9), the actual dead band: BlurEffect samples OUTSIDE the element as transparent
+                // black, so a bake of radius R loses about 3R of real cover data at every edge. At the shipped
+                // R=50 that is ~150 DIP, and the wash box only overflows 6 DIP on the left, so the ramp sat
+                // INSIDE the card: measured along the glyph-free row y137, luma climbed 24 -> 36 -> 56 from
+                // x=8 to x=160 and only reached the flat wash (~60-75) past x=250. That ramp is the left dead
+                // band, and its end is the Mach seam at x~250. Folia has the same ramp in its wash element but
+                // never shows it (sleeve: cover on top; lit: the paper clip throws away the left 174px).
+                // Fix = stretch the cover into the exact display box, edge-CLAMP that box into a canvas padded
+                // by 3R+4, blur the padded canvas, then crop the display box back out. The mapping stays
+                // CSS-exact (the crop is the same box the un-padded bake used) and no ramp pixel is left inside.
+                int pad = radius > 0.5 ? (int)Math.Ceiling(radius * 3.0) + 4 : 0;
+                int pw = w + 2 * pad, ph = hh + 2 * pad;
+                Image img = new Image();
+                img.Source = pad > 0 ? ClampPad(src, w, hh, pad, pw, ph) : (BitmapSource)src;
+                img.Stretch = Stretch.Fill;
+                img.Width = pw;
+                img.Height = ph;
+                img.Effect = new BlurEffect { Radius = radius };
+                img.Measure(new Size(pw, ph));
+                img.Arrange(new Rect(0, 0, pw, ph));
+                RenderTargetBitmap rtb = new RenderTargetBitmap(pw, ph, 96, 96, PixelFormats.Pbgra32);
+                rtb.Render(img);
+                rtb.Freeze();
+                if (pad == 0) { Log.W("wash blur-bake " + w + "x" + hh + " pad=0 radius=" + F(radius)); return rtb; }
+                CroppedBitmap cb = new CroppedBitmap(rtb, new Int32Rect(pad, pad, w, hh));
+                cb.Freeze();
+                Log.W("wash blur-bake " + pw + "x" + ph + " pad=" + pad + " -> crop " + w + "x" + hh + " radius=" + F(radius));
+                return cb;
+            }
+            catch (Exception e) { Log.W("wash blur-bake fail " + e.GetType().Name + " " + e.Message); return src; }
+        }
+
+        // Copy the cover, stretched to the display box, into a padded buffer whose border rows/columns are
+        // the clamped edge pixels. A clamp (not a transparent margin) is what gives the blur real data to
+        // sample on all four sides.
+        private static BitmapSource ClampPad(BitmapSource src, int w, int hh, int pad, int pw, int ph)
+        {
+            TransformedBitmap tb = new TransformedBitmap(src, new ScaleTransform(w / (double)src.PixelWidth, hh / (double)src.PixelHeight));
+            FormatConvertedBitmap fc = new FormatConvertedBitmap(tb, PixelFormats.Bgra32, null, 0);
+            int sw = fc.PixelWidth, sh = fc.PixelHeight, sstride = sw * 4;
+            byte[] s = new byte[sstride * sh];
+            fc.CopyPixels(s, sstride, 0);
+            int dstride = pw * 4;
+            byte[] d = new byte[dstride * ph];
+            for (int y = 0; y < ph; y++)
+            {
+                int sy = y < pad ? 0 : (y >= pad + sh ? sh - 1 : y - pad);
+                int drow = y * dstride, srow = sy * sstride;
+                for (int x = 0; x < pw; x++)
+                {
+                    int sx = x < pad ? 0 : (x >= pad + sw ? sw - 1 : x - pad);
+                    int si = srow + sx * 4, di = drow + x * 4;
+                    d[di] = s[si]; d[di + 1] = s[si + 1]; d[di + 2] = s[si + 2]; d[di + 3] = s[si + 3];
+                }
+            }
+            BitmapSource res = BitmapSource.Create(pw, ph, 96, 96, PixelFormats.Bgra32, null, d, dstride);
+            res.Freeze();
+            return res;
+        }
+
+        // Synchronous wrapper, kept ONLY for the /ctl/wash calibration path (a scan row has to be
+        // deterministic and immediately visible). The track-change path bakes off-thread, see ApplyWashSource.
+        private ImageSource Sat12(ImageSource raw, string url)
+        {
+            string key = WashSpecKey(url);
+            ImageSource hit;
+            lock (satGate) { if (satCache.TryGetValue(key, out hit)) return hit; }
+            BitmapSource res = BakeWash(raw, washRadius, washSat, washStage);
+            if (res == null) return raw;
+            lock (satGate) { SatPut(key, res); }
+            return res;
+        }
+
+        // L2 (latency brief): the wash pipeline as a pure function of a FROZEN bitmap + the three tuning
+        // numbers. Every WPF object it touches is created and consumed on the CALLING thread and the result
+        // is Frozen before it is handed back, so it is safe on a pool thread. Pixels and parameters are
+        // untouched - r50 / s1.2 / stage=post still produce exactly the bitmap they produced on the UI
+        // thread; only WHO pays for it changes. Measured cost before the move: blurMs=137 totalMs=138 ui=1
+        // thread=1 per cold cover (server.log 21:20:47.211), i.e. the UI thread was blocked for ~137ms and
+        // the 100ms heartbeat gap went to 223ms on a cold start.
+        private BitmapSource BakeWash(ImageSource raw, double radius, double sat, string stage)
+        {
+            BitmapSource bs = raw as BitmapSource;
+            if (bs == null) return null;
+            try
+            {
+                long bakeT0 = DateTime.UtcNow.Ticks;
+                if (stage == "post")
+                    bs = BlurBake(bs, radius, (int)Math.Round(WashBoxW), (int)Math.Round(WashBoxH));
+                long bakeBlurMs = (DateTime.UtcNow.Ticks - bakeT0) / TimeSpan.TicksPerMillisecond;
+                FormatConvertedBitmap fc = new FormatConvertedBitmap(bs, PixelFormats.Bgra32, null, 0);
+                int w = fc.PixelWidth, hh = fc.PixelHeight, stride = w * 4;
+                byte[] px = new byte[stride * hh];
+                fc.CopyPixels(px, stride, 0);
+                int num = (int)Math.Round(sat * 100.0);      // x1.2 -> 120/100 (was the literal 6/5)
+                const int den = 100;
+                for (int i = 0; i + 3 < px.Length; i += 4)
+                {
+                    int b = px[i], g = px[i + 1], r = px[i + 2];
+                    int mx = Math.Max(r, Math.Max(g, b)), mn = Math.Min(r, Math.Min(g, b));
+                    int mid = (mx + mn) / 2;
+                    px[i] = (byte)Math.Min(255, Math.Max(0, mid + (b - mid) * num / den));
+                    px[i + 1] = (byte)Math.Min(255, Math.Max(0, mid + (g - mid) * num / den));
+                    px[i + 2] = (byte)Math.Min(255, Math.Max(0, mid + (r - mid) * num / den));
+                }
+                BitmapSource res = BitmapSource.Create(w, hh, 96, 96, PixelFormats.Bgra32, null, px, stride);
+                res.Freeze();
+                Log.W("wash saturate x" + F(sat) + " ok " + w + "x" + hh + " stage=" + stage + " radius=" + F(radius) +
+                      " blurMs=" + bakeBlurMs + " totalMs=" + (DateTime.UtcNow.Ticks - bakeT0) / TimeSpan.TicksPerMillisecond +
+                      " ui=" + (uiThreadId != 0 && Thread.CurrentThread.ManagedThreadId == uiThreadId ? 1 : 0) +
+                      " thread=" + Thread.CurrentThread.ManagedThreadId);
+                return res;
+            }
+            catch (Exception e) { Log.W("wash bake fail " + e.GetType().Name + " " + e.Message); return null; }
+        }
+
+        // /ctl/wash:r=48,s=1.5,stage=post -- the calibration entry point used by wash-cal.ps1. It swaps the
+        // live wash bitmap, re-arms the host effect and forces the D1 veil loop to re-measure the NEW
+        // composite, so no two rows of the scan table can come from different pipelines.
+        public void WashTune(string spec)
+        {
+            Action act = delegate
+            {
+                if (spec != null && spec.Length > 0)
+                {
+                    foreach (string s in spec.Split(','))
+                    {
+                        double d;
+                        string t2 = s.Trim();
+                        if (t2.StartsWith("r=") && double.TryParse(t2.Substring(2), NumberStyles.Float, CultureInfo.InvariantCulture, out d) && d >= 0 && d <= 200) washRadius = d;
+                        else if (t2.StartsWith("s=") && double.TryParse(t2.Substring(2), NumberStyles.Float, CultureInfo.InvariantCulture, out d) && d >= 0.2 && d <= 4) washSat = d;
+                        else if (t2.StartsWith("stage=") && (t2.Substring(6) == "pre" || t2.Substring(6) == "post")) washStage = t2.Substring(6);
+                        else if (t2.StartsWith("t=") && double.TryParse(t2.Substring(2), NumberStyles.Float, CultureInfo.InvariantCulture, out d) && d >= 40 && d <= 95) washTargetLive = d;
+                        else if (t2 == "t:auto") washTargetLive = -1;
+                    }
+                }
+                ApplyWashHostEffect();
+                if (lastWashUrl != null)
+                {
+                    ImageSource raw;
+                    if (CacheGetImage(lastWashUrl, out raw))
+                    {
+                        ImageSource pipe = Sat12(raw, lastWashUrl);
+                        if (washImg != null) washImg.Source = pipe;
+                        if (washImg2 != null && washImg2.Opacity > 0.5) washImg2.Source = pipe;
+                    }
+                }
+                veilKey = "";                                  // new pipeline -> the veil must re-measure
+                if (washTargetLive > 0) veilAlpha = 0;         // a new target has to be reached from scratch
+                lastWashMeasured = -1;
+                AdaptWashStart("tune:" + spec, 120);
+                Log.W("wash tune spec=" + spec + " -> radius=" + F(washRadius) + " sat=" + F(washSat) + " stage=" + washStage + " target=" + F(washTargetLive > 0 ? washTargetLive : WashTarget));
+                DumpRect();
+            };
+            try { if (win != null && !win.Dispatcher.CheckAccess()) win.Dispatcher.BeginInvoke(act); else act(); }
+            catch (Exception e) { Log.W("wash tune fail " + e.Message); }
+        }
+
+        private void BuildCover()
+        {
+            coverHost = new Border();
+            coverHost.Width = CoverBox;
+            coverHost.Height = CoverBox;
+            coverHost.ClipToBounds = true;
+            coverHost.RenderTransformOrigin = new Point(0, 0);
+            coverTranslate = new TranslateTransform(0, 0);
+            coverScale = new ScaleTransform(1, 1);
+            // Order matters: WPF maps a point as p * M0 * M1, so the SCALE must come first to reproduce
+            // CSS "transform: translate(tx,ty) scale(s)" (scale the box, then move it). With translate
+            // first the offset got scaled too and the lit thumb landed at 29.5,6.4 instead of 200,15.
+            TransformGroup tg = new TransformGroup();
+            tg.Children.Add(coverScale);
+            tg.Children.Add(coverTranslate);
+            coverHost.RenderTransform = tg;
+            coverImg = new Image();
+            coverImg.Stretch = Stretch.UniformToFill;
+            coverBlank = new TextBlock();
+            coverBlank.Text = "";                       // no giant letter: placeholder is a frame, not a glyph
+            coverBlank.FontSize = 1;
+            coverBlank.FontFamily = Font();
+            coverGhost = new Border();
+            coverGhost.Width = 62;
+            coverGhost.Height = 62;
+            coverGhost.CornerRadius = new CornerRadius(14);
+            coverGhost.BorderThickness = new Thickness(1.5);
+            coverGhost.BorderBrush = A(0.13);
+            coverGhost.HorizontalAlignment = HorizontalAlignment.Center;
+            coverGhost.VerticalAlignment = VerticalAlignment.Center;
+            coverGhost.IsHitTestVisible = false;
+            Path ghostGlyph = new Path();
+            // F5a: the empty-cover placeholder is Folia's own lucide play glyph (filled), not a hand-drawn triangle.
+            ghostGlyph.Data = Icons.StrokeGeometry("play");
+            ghostGlyph.Stroke = A(0.10);
+            ghostGlyph.StrokeThickness = Icons.StrokeW;
+            ghostGlyph.StrokeLineJoin = PenLineJoin.Round;
+            ghostGlyph.Fill = A(0.10);
+            ghostGlyph.Width = 20;
+            ghostGlyph.Height = 20;
+            ghostGlyph.Stretch = Stretch.Uniform;
+            ghostGlyph.HorizontalAlignment = HorizontalAlignment.Center;
+            ghostGlyph.VerticalAlignment = VerticalAlignment.Center;
+            coverGhost.Child = ghostGlyph;
+            Grid lay = new Grid();
+            lay.Background = Solid(Color.FromArgb(0x0b, 0xff, 0xff, 0xff));   // low-contrast empty sleeve
+            lay.Children.Add(coverImg);
+            lay.Children.Add(coverGhost);
+            lay.Children.Add(coverBlank);
+            coverStroke = new Border();
+            coverStroke.BorderBrush = Solid(Color.FromArgb(0x24, 0xff, 0xff, 0xff));      // #ffffff24
+            coverStroke.Child = lay;
+            coverHost.Child = coverStroke;
+            Canvas.SetLeft(coverHost, 0);
+            Canvas.SetTop(coverHost, 0);
+            cardCanvas.Children.Add(coverHost);
+            // transform applied in BuildStage (needs the text nodes) -> SetCoverTransform there
+        }
+
+        private void BuildStage()
+        {
+            titleTb = MkText(TitleSize, 22, FontWeights.SemiBold, A(0.84));     // remote-song__title: 600, rgba(ink,.84)
+            titleTb.TextTrimming = TextTrimming.CharacterEllipsis;
+            cardCanvas.Children.Add(titleTb);
+
+            artistTb = MkText(ArtistSize, 22, FontWeights.Normal, A(0.46));    // remote-song__artist: 400, rgba(ink,.46)
+            artistTb.TextTrimming = TextTrimming.CharacterEllipsis;
+            cardCanvas.Children.Add(artistTb);
+
+            lyricTb = MkText(LyricSize, 26, FontWeights.SemiBold, A(0.95));   // sung line = ink, --remote-unsung .4 is the pre-line state
+            lyricTb.TextTrimming = TextTrimming.CharacterEllipsis;
+            lyricShift = new TranslateTransform(0, 0);
+            lyricTb.RenderTransform = lyricShift;
+            cardCanvas.Children.Add(lyricTb);
+
+            // the outgoing line lives in its own node: only one pair is mounted (remote-lyric__pair)
+            lyricOldTb = MkText(LyricSize, 26, FontWeights.SemiBold, A(0.95));
+            lyricOldTb.TextTrimming = TextTrimming.CharacterEllipsis;
+            lyricOldShift = new TranslateTransform(0, 0);
+            lyricOldTb.RenderTransform = lyricOldShift;
+            lyricOldTb.Visibility = Visibility.Collapsed;
+            lyricOldTb.IsHitTestVisible = false;
+            cardCanvas.Children.Add(lyricOldTb);
+
+            lyricSubTb = MkText(SubSize, 19, FontWeights.Normal, A(0.5));      // remote-lyric__sub: 13/19
+            lyricSubTb.TextTrimming = TextTrimming.CharacterEllipsis;
+            cardCanvas.Children.Add(lyricSubTb);
+
+            idleTb = MkText(12, 16, FontWeights.Normal, A(0.3));               // never rendered: debug text is log+/info only
+            idleTb.Visibility = Visibility.Collapsed;
+            idleTb.IsHitTestVisible = false;
+            cardCanvas.Children.Add(idleTb);
+            LayoutTextForState();
+            SetCoverTransform(coverState, false);   // applies transform + text layout once all nodes exist
+        }
+
+        private void BuildProgress()
+        {
+            barCanvas = new Canvas();
+            barShift = new TranslateTransform(0, 0);
+            barCanvas.RenderTransform = barShift;
+            barCanvas.Width = 376;                          // recomputed in LayoutTextForState
+            barCanvas.Height = LineBoxH;                    // transparent 376x16 hot zone == the range input
+            barCanvas.Background = Brushes.Transparent;
+            barCanvas.MouseLeftButtonDown += BarDown;
+            barCanvas.MouseMove += BarMove;
+            barCanvas.MouseLeftButtonUp += BarUp;
+            trackRect = new Rectangle();
+            trackRect.Height = 2;
+            trackRect.RadiusX = 1;
+            trackRect.RadiusY = 1;
+            trackRect.Fill = A(0.11);   // remote-line__track: rgba(ink,.11)
+            Canvas.SetTop(trackRect, 7);                    // track 7 DIP inside the 16 DIP hot zone -> window y=163
+            Canvas.SetLeft(trackRect, 0);
+            barCanvas.Children.Add(trackRect);
+            fillRect = new Rectangle();
+            fillRect.Height = 2;
+            fillRect.RadiusX = 1;
+            fillRect.RadiusY = 1;
+            fillRect.Fill = A(0.58);                        // remote-line__fill: rgba(ink,.58) until lit
+            Canvas.SetTop(fillRect, 7);
+            Canvas.SetLeft(fillRect, 0);
+            barCanvas.Children.Add(fillRect);
+            knob = new Ellipse();
+            knob.Width = 9;
+            knob.Height = 9;
+            knob.Fill = A(1.0);
+            knob.Visibility = Visibility.Collapsed;   // 游标只在 lit 态出现
+            Canvas.SetTop(knob, 6.5);
+            barCanvas.Children.Add(knob);
+            Canvas.SetLeft(barCanvas, IdleTextLeft);
+            Canvas.SetTop(barCanvas, IdleBarTop);
+            cardCanvas.Children.Add(barCanvas);
+        }
+
+        private void BuildDeck()
+        {
+            double deckY = DeckTop;
+            double cy = deckY + TransportTop;               // transport centre in card space
+            double transportW = SkipSize + TransportGap + PlaySize + TransportGap + SkipSize;   // 128
+            double x0 = SleeveW + (FaceW - transportW) / 2; // centred in face
+            btnPrev = KeyBtn("skip-back", SvgSkip, SkipSize, "prev", cy);
+            Canvas.SetLeft(btnPrev, x0);
+            btnPlay = KeyBtn("play", SvgPlayPlaying, PlaySize, "play", cy);
+            Canvas.SetLeft(btnPlay, x0 + SkipSize + TransportGap);
+            btnNext = KeyBtn("skip-forward", SvgSkip, SkipSize, "next", cy);
+            Canvas.SetLeft(btnNext, x0 + SkipSize + TransportGap + PlaySize + TransportGap);
+
+            double smallX = CardW - 16 - SmallSize;
+            btnMore = KeyBtn("ellipsis", SvgMore, SmallSize, "more", cy);
+            Canvas.SetLeft(btnMore, smallX);
+            btnQueue = KeyBtn("list-music", SvgSmall, SmallSize, "queue", cy);
+            Canvas.SetLeft(btnQueue, smallX - (SmallSize + 2));
+            btnLoop = KeyBtn("repeat", SvgSmall, SmallSize, "loop", cy);
+            Canvas.SetLeft(btnLoop, smallX - 2 * (SmallSize + 2));
+            btnLike = KeyBtn("heart", SvgSmall, SmallSize, "like", cy);
+            Canvas.SetLeft(btnLike, smallX - 3 * (SmallSize + 2));
+
+            loopDot = new Ellipse();
+            loopDot.Width = 3;
+            loopDot.Height = 3;
+            loopDot.Fill = A(0.9);
+            loopDot.Visibility = Visibility.Collapsed;
+            cardCanvas.Children.Add(loopDot);
+
+            TextBlock t = new TextBlock();
+            t.FontFamily = Font();
+            t.FontSize = 11;
+            t.FontWeight = FontWeights.Medium;
+            timeRun = new System.Windows.Documents.Run("0:00");
+            timeRun.Foreground = A(0.78);
+            timeTotalRun = new System.Windows.Documents.Run(" / 0:00");
+            timeTotalRun.Foreground = A(0.38);
+            t.Inlines.Add(timeRun);
+            t.Inlines.Add(timeTotalRun);
+            System.Windows.Documents.Typography.SetNumeralAlignment(t, FontNumeralAlignment.Tabular);
+            Canvas.SetLeft(t, IdleTextLeft);
+            Canvas.SetTop(t, RowCentre - 9);
+            t.Name = "timeText";
+            t.Opacity = 0;
+            t.IsHitTestVisible = false;
+            timeTb = t;
+            cardCanvas.Children.Add(t);
+        }
+
+        private void BuildTools()
+        {
+            double x = CardW - ToolsRight - ToolSize;
+            btnClose = KeyBtn("x", ToolSvg, ToolSize, "close", ToolsTop + ToolSize / 2);
+            Canvas.SetLeft(btnClose, x);
+            btnPin = KeyBtn("pin", ToolSvg, ToolSize, "pin", ToolsTop + ToolSize / 2);
+            Canvas.SetLeft(btnPin, x - (ToolSize + ToolGap));
+            btnTheme = KeyBtn("palette", ToolSvg, ToolSize, "theme", ToolsTop + ToolSize / 2);
+            Canvas.SetLeft(btnTheme, x - 2 * (ToolSize + ToolGap));
+        }
+
+        private void BuildActionsHost()
+        {
+            // .remote-actions band (top 46 height 32) - queue row actions are out of scope
+            // (contract v1.1 #2), so the band is reserved but kept empty.
+            actionsHost = new Grid();
+            actionsHost.Width = FaceW;
+            actionsHost.Height = ActionsH;
+            actionsHost.Visibility = Visibility.Collapsed;
+            actionsHost.IsHitTestVisible = false;
+            Canvas.SetLeft(actionsHost, SleeveW);
+            Canvas.SetTop(actionsHost, ActionsTop);
+            cardCanvas.Children.Add(actionsHost);
+        }
+
+        private static Path Glyph(Border b)
+        {
+            Viewbox v = b == null ? null : b.Child as Viewbox;
+            Canvas cv = v == null ? null : v.Child as Canvas;
+            if (cv == null) return null;
+            foreach (UIElement u in cv.Children) { Path pp = u as Path; if (pp != null) return pp; }
+            return null;
+        }
+
+        // F5a: paints one of Folia's glyphs into a button. The glyph lives in the lucide 24x24 user space inside a
+        // Viewbox sized to the SVG size (15 / 16 / 17 / 21 / 22 / 13 per SPEC 5.2 + 7.1), so a stroke-width of 2
+        // covers the same 2/24 of the box that an svg with width=N stroke-width=2 does in the browser. Filled only
+        // where the package fills (skip-back / skip-forward / play / pause, plus the heart when liked); the palette
+        // dots are a separate filled layer because the package itself marks them fill:currentColor.
+        private void SetGlyph(Border b, string name, Brush brush, bool alsoFill, double opacity)
+        {
+            Viewbox vb = b == null ? null : b.Child as Viewbox;
+            Canvas cv = vb == null ? null : vb.Child as Canvas;
+            if (cv == null) return;
+            SolidColorBrush solid = brush as SolidColorBrush;
+            string brushKey = solid != null ? solid.Color.ToString() : (brush == null ? "none" : brush.GetType().FullName);
+            string glyphKey = name + "|" + brushKey + "|" + (alsoFill ? "1" : "0") + "|" + opacity.ToString("0.###", CultureInfo.InvariantCulture);
+            string previousKey;
+            if (glyphKeys.TryGetValue(b, out previousKey) && previousKey == glyphKey) return;
+            glyphKeys[b] = glyphKey;
+            cv.Children.Clear();
+            Geometry g = Icons.StrokeGeometry(name);
+            if (g != null)
+            {
+                Path p = new Path();
+                p.Data = g;
+                p.Stroke = brush;
+                p.StrokeThickness = Icons.StrokeW;
+                p.StrokeStartLineCap = PenLineCap.Round;
+                p.StrokeEndLineCap = PenLineCap.Round;
+                p.StrokeLineJoin = PenLineJoin.Round;
+                if (alsoFill) p.Fill = brush;
+                p.Opacity = opacity;
+                cv.Children.Add(p);
+            }
+            Geometry dots = Icons.DotGeometry(name);
+            if (dots != null)
+            {
+                Path pd = new Path();
+                pd.Data = dots;
+                pd.Fill = brush;
+                pd.Opacity = opacity;
+                cv.Children.Add(pd);
+            }
+        }
+
+        private Border KeyBtn(string glyphName, double svg, double box, string key, double centreY)
+        {
+            Border b = new Border();
+            b.Width = box;
+            b.Height = box;
+            b.CornerRadius = new CornerRadius(box / 2);
+            b.Background = Brushes.Transparent;
+            b.Cursor = Cursors.Hand;
+            Viewbox vb = new Viewbox();
+            vb.Width = svg;
+            vb.Height = svg;
+            vb.Stretch = Stretch.Uniform;
+            Canvas cv = new Canvas();
+            cv.Width = 24;
+            cv.Height = 24;
+            vb.Child = cv;
+            b.Child = vb;
+            SetGlyph(b, glyphName, A(0.92), Icons.FilledByFolia(glyphName), 1.0);
+            Canvas.SetTop(b, centreY - box / 2);
+            cardCanvas.Children.Add(b);
+            hits[key] = b;
+            b.MouseEnter += delegate { b.Background = Hover(); };
+            b.MouseLeave += delegate { b.Background = Brushes.Transparent; };
+            // L5: the pointer path goes through the unified hit verdict, not straight into the action table.
+            b.MouseLeftButtonDown += delegate (object s, MouseButtonEventArgs e) { e.Handled = true; ClickFromPointer(key, e.GetPosition(win)); };
+            return b;
+        }
+
+        private void ApplyIdleHint()
+        {
+            if (idleTb == null) return;
+            idleTb.Text = "";
+            idleTb.Visibility = Visibility.Collapsed;      // debug strings: server.log + /info only, never the UI
+            Log.W("idle hint backend=" + core.Backend + ":" + core.Port);
+        }
+
+        private void BuildQueuePanel()
+        {
+            queuePanel = new Border();
+            queuePanel.Width = QueueW;
+            queuePanel.CornerRadius = new CornerRadius(Radius);
+            queuePanel.Background = CardBrush();
+            queuePanel.BorderThickness = new Thickness(1);
+            queuePanel.BorderBrush = StrokeBrush();
+            queuePanel.ClipToBounds = true;
+            queuePanelRender = new TranslateTransform(0, 0);
+            queuePanel.RenderTransform = queuePanelRender;
+            queuePanel.Effect = new DropShadowEffect { BlurRadius = 6, ShadowDepth = 1, Direction = 270, Opacity = ShadowOpacity(), Color = Colors.Black };
+            queuePanel.Visibility = Visibility.Collapsed;
+
+            Grid g = new Grid();
+            g.RowDefinitions.Add(new RowDefinition { Height = new GridLength(QueueSearchH) });
+            g.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            searchBox = new TextBox();
+            searchBox.Height = 28;
+            searchBox.Margin = new Thickness(8, 6, 8, 6);
+            searchBox.Padding = new Thickness(8, 0, 8, 0);
+            searchBox.FontSize = 12;
+            searchBox.FontFamily = Font();
+            searchBox.BorderThickness = new Thickness(0);
+            searchBox.Background = A(0.1);
+            searchBox.Foreground = A(1.0);
+            searchBox.ToolTip = "filter (local only)";
+            Grid.SetRow(searchBox, 0);
+            g.Children.Add(searchBox);
+            ScrollViewer sv = new ScrollViewer();
+            sv.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+            sv.Margin = new Thickness(4, 0, 4, 4);
+            queueList = new StackPanel();
+            sv.Content = queueList;
+            Grid.SetRow(sv, 1);
+            g.Children.Add(sv);
+            queueGrid = g;
+            queuePanel.Child = g;
+            surface.Children.Add(queuePanel);
+        }
+
+        private void PositionQueue()
+        {
+            if (queuePanel == null) return;
+            if (queueH <= 0)
+            {
+                queuePanel.Visibility = Visibility.Collapsed;
+                queuePanel.Height = 0;
+                surface.Height = WinH;
+                win.Height = WinH;                                // back to the 753x230 idle card, no empty panel
+                Canvas.SetTop(cardHost, Gutter);
+                ApplyCardClip();                                  // B9: back to the gutter-filling clip
+                return;
+            }
+            double panelH = queueH - QueueGap;
+            queuePanel.Height = panelH;
+            if (queueGrid != null) queueGrid.OpacityMask = MaskFor(RoundedRect(QueueW, panelH, Radius, Radius, Radius, Radius));
+            queuePanel.Visibility = Visibility.Visible;
+            Canvas.SetLeft(queuePanel, QueueLeft);
+            Canvas.SetTop(queuePanel, queueDown ? 186 : Gutter);
+            Canvas.SetTop(cardHost, queueDown ? Gutter : (WinH + queueH) - CardH - Gutter);
+            surface.Height = WinH + queueH;
+            win.Height = WinH + queueH;
+            ApplyCardClip();                                      // B9: queue open -> plain rounded clip
+        }
+
+        // ---------------------------------------------------------------- text layout
+        private TextBlock MkText(double size, double line, FontWeight weight, Brush brush)
+        {
+            TextBlock t = new TextBlock();
+            t.FontFamily = Font();
+            t.FontSize = size;
+            t.LineHeight = line;
+            t.FontWeight = weight;
+            t.Foreground = brush;
+            System.Windows.Documents.Typography.SetNumeralAlignment(t, FontNumeralAlignment.Tabular);
+            return t;
+        }
+
+        private bool SleeveActive()
+        {
+            return coverState == CoverState.Sleeve;
+        }
+
+        private void LayoutTextForState()
+        {
+            if (titleTb == null || barCanvas == null) return;
+            bool card = !HasLyricLine(core.Store.Snapshot());
+            bool sleeve = coverState == CoverState.Sleeve;
+            bool exp = coverState == CoverState.Expanded;
+            bool lineRow = exp || coverState == CoverState.Line;
+
+            // remote-song has two faces. The line face is 11.5/22 next to a 22 DIP thumb;
+            // the no-lyric card face is 20/26 + 13/19 next to a 56 DIP cover.
+            titleTb.FontSize = card ? 20 : TitleSize;
+            titleTb.LineHeight = card ? 26 : 22;
+            titleTb.MaxHeight = card ? 52 : 22;
+            titleTb.TextWrapping = card ? TextWrapping.Wrap : TextWrapping.NoWrap;
+            titleTb.TextTrimming = card ? TextTrimming.None : TextTrimming.CharacterEllipsis;
+            titleTb.ClipToBounds = card;
+            titleTb.Foreground = A(card ? 1.0 : 0.84);
+            artistTb.FontSize = card ? 13 : ArtistSize;
+            artistTb.LineHeight = card ? 19 : 22;
+            artistTb.MaxHeight = card ? 19 : 22;
+            artistTb.Foreground = A(card ? 0.58 : 0.46);
+
+            double textLeft = card ? SleeveW + SongCardLeft - (sleeve ? 72 : 0) : (lineRow ? ExpTitleLeft : IdleTextLeft);
+            double rightGuard = card ? CardW - SongCardRight - (sleeve ? 72 : 0) : (lineRow ? ToolZoneLeft : (IdleTextLeft + IdleRowW));
+            double titleMax = card ? rightGuard - textLeft : rightGuard - textLeft - 24;
+            if (titleMax < 90) titleMax = 90;
+            titleTb.MaxWidth = titleMax;
+
+            if (card)
+            {
+                titleTb.Measure(new Size(titleMax, double.PositiveInfinity));
+                double titleH = Math.Min(52, Math.Max(26, titleTb.DesiredSize.Height));
+                bool hasArtist = !string.IsNullOrEmpty(artistTb.Text);
+                double totalH = titleH + (hasArtist ? 21 : 0);       // 2px gap + 19px artist line
+                double top = SongCardTop + (56 - totalH) / 2;         // .remote-song__cardtext: centred in 56px
+                Canvas.SetLeft(titleTb, textLeft);
+                Canvas.SetTop(titleTb, top);
+                artistTb.MaxWidth = titleMax;
+                Canvas.SetLeft(artistTb, textLeft);
+                Canvas.SetTop(artistTb, top + titleH + 2);
+            }
+            else
+            {
+                titleTb.Measure(new Size(titleMax, double.PositiveInfinity));
+                double tw = Math.Min(titleTb.DesiredSize.Width, titleMax);
+                Canvas.SetLeft(titleTb, textLeft);
+                Canvas.SetTop(titleTb, lineRow ? ExpTitleTop : IdleTitleTop);
+                double aLeft = textLeft + tw + 9;
+                double aMax = rightGuard - aLeft;
+                if (aMax < 46) aMax = 46;
+                artistTb.MaxWidth = aMax;
+                Canvas.SetLeft(artistTb, aLeft);
+                Canvas.SetTop(artistTb, lineRow ? ExpTitleTop : IdleTitleTop);
+            }
+
+            double lyricLeft = lineRow ? ExpTextLeft : IdleTextLeft;
+            double lyricW = CardW - lyricLeft - (lineRow ? ExpTextRight : IdleTextRight);
+            Canvas.SetLeft(lyricTb, lyricLeft);
+            Canvas.SetTop(lyricTb, lineRow ? ExpLyricTop : IdleLyricTop);
+            Canvas.SetLeft(lyricSubTb, lyricLeft);
+            Canvas.SetTop(lyricSubTb, lineRow ? ExpSubTop : IdleSubTop);
+            lyricTb.MaxWidth = lyricW;
+            lyricSubTb.MaxWidth = lyricW;
+            if (lyricOldTb != null)
+            {
+                Canvas.SetLeft(lyricOldTb, lyricLeft);
+                Canvas.SetTop(lyricOldTb, lineRow ? ExpLyricTop : IdleLyricTop);
+                lyricOldTb.MaxWidth = lyricW;
+            }
+            idleTb.MaxWidth = lyricW;
+            Canvas.SetLeft(barCanvas, lyricLeft);
+            barCanvas.Width = lyricW;
+            trackRect.Width = lyricW;
+            if (fillRect.Width > lyricW) fillRect.Width = lyricW;
+            if (timeTb != null) { Canvas.SetLeft(timeTb, lyricLeft); Canvas.SetTop(timeTb, RowCentre - 9); }
+        }
+
+        private void SetCoverTransform(CoverState st, bool animate)
+        {
+            coverState = st;
+            double tx = 0, ty = 0, sc = 1, r1 = 18, r2 = 0, r3 = 0, r4 = 18, stroke = 0;   // D3: no hairline on the sleeve edge
+            if (st == CoverState.Card) { tx = 196; ty = 35; sc = 0.318182; r1 = r2 = r3 = r4 = 34.57; stroke = 1.57; }
+            else if (st == CoverState.Line) { tx = 196; ty = 11; sc = 0.125; r1 = r2 = r3 = r4 = 48; stroke = 4; }
+            // hover morph: 176 sleeve -> 48 DIP rounded cover inline in the title row
+            // USER 2026-11-10 #2: the shrinking thumb is WANTED (it is Folia's lit state). What was wrong was
+            // that the 0..174 strip stayed painted. ApplyPaper() now cuts the card at x=174 while this morph
+            // runs, so the strip is gone instead of being filled - exactly Folia's
+            // ".remote-paper clip inset(0 0 0 174px)". 176 -> 22 DIP thumb at 196 = 174 + 22 inset.
+            else if (st == CoverState.Expanded) { tx = ExpCoverLeft; ty = ExpCoverTop; sc = ExpCoverScale; r1 = r2 = r3 = r4 = 48; stroke = 4; }
+            else { tx = 0; ty = 0; sc = 1; r1 = 18; r2 = 0; r3 = 0; r4 = 18; stroke = 0.5; }
+            coverHost.CornerRadius = new CornerRadius(r1, r2, r3, r4);
+            // A WPF Border never clips its child to CornerRadius, so the sleeve painted square corners
+            // over the card radius (user report). Explicit geometry, asymmetric 18/0/0/18 in the sleeve.
+            coverHost.OpacityMask = MaskFor(RoundedRect(CoverBox, CoverBox, r1, r2, r3, r4));
+            coverStroke.BorderThickness = new Thickness(stroke);
+            // transform/radius/shadow morph: .3s var(--remote-snap) leaving the sleeve,
+            // .56s var(--remote-settle) + 60ms delay entering it. Never a jump cut.
+            double morphMs = st == CoverState.Sleeve ? LitOutMs : LitInMs;      // #6: one clock with the paper
+            Duration d = animate ? new Duration(TimeSpan.FromMilliseconds(morphMs))
+                                 : new Duration(TimeSpan.FromMilliseconds(0));
+            KeySpline ks = st == CoverState.Sleeve ? Settle() : Glide();        // #7: same curve as the paper
+            TimeSpan delay = TimeSpan.Zero;
+            tgtTx = tx; tgtTy = ty; tgtSc = sc; morphUntilTicks = DateTime.UtcNow.Ticks + (animate ? (d.TimeSpan + delay).Ticks : 0) + 800000;
+            if (animate)
+            {
+                Anim(coverTranslate, TranslateTransform.XProperty, tx, d, ks, delay);
+                Anim(coverTranslate, TranslateTransform.YProperty, ty, d, ks, delay);
+                Anim(coverScale, ScaleTransform.ScaleXProperty, sc, d, ks, delay);
+                Anim(coverScale, ScaleTransform.ScaleYProperty, sc, d, ks, delay);
+            }
+            else
+            {
+                coverTranslate.X = tx; coverTranslate.Y = ty; coverScale.ScaleX = sc; coverScale.ScaleY = sc;
+            }
+            LayoutTextForState();
+            ApplyPaper(st == CoverState.Expanded, animate);
+            core.CoverState = st.ToString().ToLowerInvariant();
+        }
+
+        // CSS cubic-bezier(.32,.72,0,1) == WPF KeySpline.ControlPoints
+        // cubic-bezier(.32,.72,0,1) -> ControlPoints=(.32,.72) ControlPoints2=(0,1)
+        // rounded rectangle with four independent radii; radius 0 == square corner
+        // white filled geometry used as an OpacityMask -> rounded image without Clip
+        private static Brush MaskFor(Geometry g)
+        {
+            DrawingGroup dg = new DrawingGroup();
+            dg.Children.Add(new GeometryDrawing(Brushes.White, null, g));
+            DrawingBrush db = new DrawingBrush(dg);
+            db.Stretch = Stretch.Fill;              // drawing bounds == the element bounds
+            return db;
+        }
+
+        private static Geometry RoundedRect(double w, double h, double tl, double tr, double br, double bl)
+        {
+            CultureInfo ci = CultureInfo.InvariantCulture;
+            Func<double, string> n = delegate (double v) { return v.ToString("0.###", ci); };
+            Func<double, double, string> rad = delegate (double a, double b) { return n(Math.Max(0.01, Math.Min(a, b))); };
+            StringBuilder g = new StringBuilder();
+            g.Append("M").Append(rad(tl, tl)).Append(",0 H").Append(n(w - Math.Max(0.01, tr)));
+            g.Append(" A").Append(rad(tr, tr)).Append(",").Append(rad(tr, tr)).Append(" 0 0 1 ").Append(n(w)).Append(",").Append(rad(tr, tr));
+            g.Append(" V").Append(n(h - Math.Max(0.01, br)));
+            g.Append(" A").Append(rad(br, br)).Append(",").Append(rad(br, br)).Append(" 0 0 1 ").Append(n(w - Math.Max(0.01, br))).Append(",").Append(n(h));
+            g.Append(" H").Append(rad(bl, bl));
+            // BUGFIX 2026-11-10 #4: both LEFT corners had sweep=0. With (0,h-bl)->(bl,h) / (0,tl)->(tl,0) and
+            // sweep 0 the arc centre lands on the CORNER instead of on the inset centre, i.e. the path scooped
+            // a radius-18 DIP quarter disc out of each left corner instead of rounding it. That is the
+            // "左边两个角缺一块" the user reported on every song: the right corners already used sweep=1 and
+            // were always fine. Measured before the fix (luminance map of the rendered card): the cover edge
+            // cut a straight 45 deg line from (30,7) to (8,29) px; a correct r18 corner starts at ~6 px.
+            g.Append(" A").Append(rad(bl, bl)).Append(",").Append(rad(bl, bl)).Append(" 0 0 1 0,").Append(n(h - Math.Max(0.01, bl)));
+            g.Append(" V").Append(rad(tl, tl));
+            g.Append(" A").Append(rad(tl, tl)).Append(",").Append(rad(tl, tl)).Append(" 0 0 1 ").Append(rad(tl, tl)).Append(",0 Z");
+            return Geometry.Parse(g.ToString());
+        }
+
+        private static KeySpline Settle() { return new KeySpline(0.32, 0.72, 0, 1); }
+        // cubic-bezier(.42,0,1,1) == CSS ease-in, used by the outgoing lyric line
+        private static KeySpline EaseIn() { return new KeySpline(0.42, 0.0, 1.0, 1.0); }
+        // cubic-bezier(.4,0,.7,.2) == the queue collapse curve
+        private static KeySpline EaseExit() { return new KeySpline(0.4, 0.0, 0.7, 0.2); }
+        // cubic-bezier(.2,.8,.2,1)
+        private static KeySpline Snap() { return new KeySpline(0.2, 0.8, 0.2, 1); }
+        // USER 2026-11-10 #7 (cubic-bezier(.4,0,.2,1)): Snap() puts 60% of the distance into the first three
+        // 60 Hz frames - measured on the clip: x = 0 / 66 / 115 / 140 / 153 / 160 ... i.e. three visible jumps
+        // and then almost nothing. That stepping IS the "卡顿", not dropped frames. Glide spreads the same
+        // distance over the whole duration (gentle in, gentle out) so every frame advances a similar amount.
+        private static KeySpline Glide() { return new KeySpline(0.4, 0.0, 0.2, 1.0); }
+
+        // A single trailing key frame is read by WPF as the START value: that is what made the old
+        // build teleport and then hold the property (later local assignments had no effect). Correct
+        // form = hold the old value at t=0, spline to the target, FillBehavior.Stop with the base
+        // value already written, so nothing snaps back and nothing sticks.
+        private void AnimFrom(DependencyObject target, DependencyProperty p, double from, double to, Duration d, KeySpline ks, TimeSpan delay)
+        {
+            try
+            {
+                TimeSpan span = d.TimeSpan + delay;
+                DoubleAnimationUsingKeyFrames kf = new DoubleAnimationUsingKeyFrames();
+                kf.Duration = new Duration(span);
+                kf.FillBehavior = FillBehavior.Stop;
+                kf.KeyFrames.Add(new LinearDoubleKeyFrame(from, KeyTime.FromTimeSpan(TimeSpan.Zero)));
+                if (delay > TimeSpan.Zero) kf.KeyFrames.Add(new LinearDoubleKeyFrame(from, KeyTime.FromTimeSpan(delay)));
+                DoubleKeyFrame sk;
+                if (ks == null) sk = new LinearDoubleKeyFrame(to, KeyTime.FromTimeSpan(span));
+                else sk = new SplineDoubleKeyFrame(to, KeyTime.FromTimeSpan(span), ks);
+                kf.KeyFrames.Add(sk);
+                target.SetValue(p, to);
+                Storyboard sb = new Storyboard();
+                Storyboard.SetTarget(kf, target);
+                Storyboard.SetTargetProperty(kf, new PropertyPath(p));
+                sb.Children.Add(kf);
+                // Leave DesiredFrameRate unset: the current display is 179 Hz, so a fixed
+                // 60 Hz animation clock produces visible judder on this workstation.
+                sb.Begin();
+            }
+            catch (Exception ex) { Log.W("animfrom " + ex.Message); }
+        }
+
+        private void Anim(DependencyObject target, DependencyProperty p, double to, Duration d, KeySpline ks, TimeSpan delay)
+        {
+            try
+            {
+                double from = Convert.ToDouble(target.GetValue(p), CultureInfo.InvariantCulture);
+                TimeSpan span = d.TimeSpan + delay;
+                DoubleAnimationUsingKeyFrames kf = new DoubleAnimationUsingKeyFrames();
+                kf.Duration = new Duration(span);
+                kf.BeginTime = TimeSpan.Zero;
+                kf.FillBehavior = FillBehavior.Stop;
+                kf.KeyFrames.Add(new LinearDoubleKeyFrame(from, KeyTime.FromTimeSpan(TimeSpan.Zero)));
+                if (delay > TimeSpan.Zero) kf.KeyFrames.Add(new LinearDoubleKeyFrame(from, KeyTime.FromTimeSpan(delay)));
+                DoubleKeyFrame sk;
+                if (ks == null) sk = new LinearDoubleKeyFrame(to, KeyTime.FromTimeSpan(span));
+                else sk = new SplineDoubleKeyFrame(to, KeyTime.FromTimeSpan(span), ks);
+                kf.KeyFrames.Add(sk);
+                target.SetValue(p, to);
+                Storyboard sb = new Storyboard();
+                Storyboard.SetTarget(kf, target);
+                Storyboard.SetTargetProperty(kf, new PropertyPath(p));
+                sb.Children.Add(kf);
+                // Do not pin the animation to 60 Hz. The old assumption that DWM always presents
+                // at 60 Hz is false on high-refresh displays (this machine reports 179 Hz).
+                sb.Begin();
+            }
+            catch (Exception ex) { Log.W("anim " + ex.Message); }
+        }
+        // ---------------------------------------------------------------- icons
+        private const string IconPlay = "M8,4.6 L19.6,12 L8,19.4 Z";
+        private const string IconPause = "M7.6,5.6 H10.4 V18.4 H7.6 Z M13.6,5.6 H16.4 V18.4 H13.6 Z";
+        private const string IconPrev = "M5.8,5.6 H8 V18.4 H5.8 Z M18.6,5.6 L9.8,12 L18.6,18.4 Z";
+        private const string IconNext = "M16,5.6 H18.2 V18.4 H16 Z M5.4,5.6 L14.2,12 L5.4,18.4 Z";
+        private const string IconHeart = "M12,20.6 L10.6,19.2 C5.2,14.2 2.2,11.5 2.2,8.2 C2.2,5.4 4.3,3.2 7.1,3.2 C8.5,3.2 9.9,3.8 11,4.9 L12,5.9 L13,4.9 C14.1,3.8 15.5,3.2 16.9,3.2 C19.7,3.2 21.8,5.4 21.8,8.2 C21.8,11.5 18.8,14.2 13.4,19.2 Z";
+        private const string IconRepeat = "M7,7 H17 V10 L21,8 L17,4 V7 H5 V13 H7 Z M17,17 H7 V14 L3,16 L7,20 V17 H19 V11 H17 Z";
+        private const string IconRepeatOne = "M7,7 H17 V10 L21,8 L17,4 V7 H5 V13 H7 Z M17,17 H7 V14 L3,16 L7,20 V17 H19 V11 H17 Z M13.4,15.6 H12.1 L10.6,16.7 V17.6 L11.7,16.9 V19 H13.4 Z";
+        private const string IconShuffle = "M8.5,7.5 L4,3 L2.6,4.4 L7.1,8.9 L8.5,7.5 Z M17,4 L20.5,7.5 L17,11 L15.6,9.6 L17.7,7.5 L15.6,5.4 Z M3.5,20.6 L8.9,15.2 L7.5,13.8 L2,19.2 Z M14,15 H17 V13.5 L20.5,17 L17,20.5 V19 H12.5 L6,12.5 L4.5,14 L2.5,12 L4,10.5 L5.5,12 Z";
+        private const string IconQueue = "M4,6 H20 V8 H4 Z M4,11 H20 V13 H4 Z M4,16 H15 V18 H4 Z";
+        private const string IconMore = "M5,12 m-1.9,0 a1.9,1.9 0 1,0 3.8,0 a1.9,1.9 0 1,0 -3.8,0 M12,12 m-1.9,0 a1.9,1.9 0 1,0 3.8,0 a1.9,1.9 0 1,0 -3.8,0 M19,12 m-1.9,0 a1.9,1.9 0 1,0 3.8,0 a1.9,1.9 0 1,0 -3.8,0";
+        private const string IconTheme = "M12,3 A9,9 0 1,0 12,21 A9,9 0 0,1 12,3 Z";
+        private const string IconPin = "M16,9 V4 H8 V9 C8,10.7 6.7,12 5,12 V14 H10.5 V21 L12,22 L13.5,21 V14 H19 V12 C17.3,12 16,10.7 16,9 Z";
+        private const string IconClose = "M6.4,5 L12,10.6 L17.6,5 L19,6.4 L13.4,12 L19,17.6 L17.6,19 L12,13.4 L6.4,19 L5,17.6 L10.6,12 L5,6.4 Z";
+
+        private FontFamily Font() { return new FontFamily("Segoe UI, Microsoft YaHei UI, Microsoft YaHei, PingFang SC"); }
+
+        // ---------------------------------------------------------------- behaviour
+        // F2 (run-22): one close semantic. Every user-facing close (the card's x, the "close" verb,
+        // Esc level 2, /ctl/hide, --toggle) is a Hide(); the ONLY real Window.Close() left in the
+        // process is Quit(), reachable from the explicit quit verb. Close() without a process exit is
+        // a trap, and it fired: ShutdownMode is OnExplicitShutdown (Program.cs:121), so after a bare
+        // Close() the dispatcher and the HTTP server keep answering while the window is gone - every
+        // later /ctl/show then throws "Cannot set Visibility after a Window is closed" and only a
+        // process restart recovers (server.log 00:08:42.886 poll stop reason=closing visible=True ->
+        // 00:10:05.341 / 00:10:32.998 / 00:11:21.995 / 00:11:23.510 / 00:11:24.722 / 00:11:42.312
+        // UI exception InvalidOperationException -> process finally left at 00:12:37.311, four minutes
+        // during which /state, /ctl/dbg-pointer and /click all kept answering).
+        // closedByQuit therefore turns Show/Hide/Toggle into a logged no-op instead of an exception,
+        // and the watchdog guarantees the process is really gone 2.5s after a quit.
+        private bool closedByQuit = false;
+        public void Show() { if (closedByQuit) { Log.W("show refused: window closed by quit"); return; } if (!win.IsVisible) win.Show(); win.Activate(); StartPoll("Show()"); }
+        public void Hide() { if (closedByQuit) { Log.W("hide refused: window closed by quit"); return; } win.Hide(); }
+        public bool IsVisible { get { return win != null && win.IsVisible; } }
+        public void Toggle() { if (closedByQuit) { Log.W("toggle refused: window closed by quit"); return; } Log.W("toggle verb -> " + (IsVisible ? "hide" : "show")); if (IsVisible) Hide(); else Show(); }
+        public void Quit()
+        {
+            core.Store.Changed -= OnChanged;
+            closedByQuit = true;
+            DisposeTray();                                          // M1a: pull the tray icon first so no ghost survives the exit
+            try { win.Hide(); } catch { }                                  // nothing visible during the teardown
+            try { win.Close(); } catch { }
+            try { if (Application.Current != null) Application.Current.Shutdown(); } catch { }
+            Thread quitWatch = new Thread(delegate ()
+            {
+                try { Thread.Sleep(2500); } catch { }
+                Log.W("quit watchdog fired: main did not return within 2500ms, forcing exit");
+                try { string lk = Paths.Runtime("MiniPlayer.lock"); if (File.Exists(lk)) File.Delete(lk); } catch { }
+                try { File.Delete(Paths.Runtime("port.json")); } catch { }
+                try { Log.Close(); } catch { }     // #7: buffered log - do not lose the shutdown tail
+                Environment.Exit(0);
+            });
+            quitWatch.IsBackground = true;
+            quitWatch.Name = "quit-watchdog";
+            quitWatch.Start();
+        }
+
+        // N4: where the card will be placed, read straight from position.json (DIP + the dpi it was
+        // written with) so the monitor can be resolved before the window has ever been shown.
+        static double s_posL = double.NaN, s_posT = double.NaN;
+        static int s_posDpi = 0;
+        static int SavedPhysicalX()
+        {
+            if (double.IsNaN(s_posL)) return 0;
+            double k = (s_posDpi >= 96 && s_posDpi <= 480) ? s_posDpi / 96.0 : 1.0;
+            return (int)Math.Round(s_posL * k);
+        }
+        static int SavedPhysicalY()
+        {
+            if (double.IsNaN(s_posT)) return 0;
+            double k = (s_posDpi >= 96 && s_posDpi <= 480) ? s_posDpi / 96.0 : 1.0;
+            return (int)Math.Round(s_posT * k);
+        }
+
+        public static bool s_renderedForDpi = false;      // N4: gates the HWND DPI path until the window has rendered
+
+        public static int ResolveDpi(IntPtr h)
+        {
+            int d = 0;
+            // N4: GetDpiForWindow on a never-shown HWND returns the PRIMARY monitor DPI (96 on this
+            // machine) even though the card is placed on the 125% screen. Only trust it once the
+            // window has actually rendered; before that use the system DPI, which is what the
+            // pre-EnsureHandle builds resolved to.
+            if (h != IntPtr.Zero && s_renderedForDpi) { try { d = (int)Win.GetDpiForWindow(h); } catch { } }
+            if (d <= 0) d = Win.DpiAt(SavedPhysicalX(), SavedPhysicalY());        // N4: monitor under the saved spot
+            if (d <= 0) { POINT cp; if (Win.GetCursorPos(out cp)) d = Win.DpiAt(cp.X, cp.Y); }
+            if (d <= 0) { try { d = (int)Win.GetDpiForSystem(); } catch { } }
+            if (d <= 0) { try { d = Win.DpiX(); } catch { } }
+            if (d < 96 || d > 480) d = 96;
+            return d;
+        }
+
+        private void StartPoll(string reason)
+        {
+            BuildTimers(reason);
+            if (poll.IsEnabled && dumpTimer.IsEnabled && autoQueue.IsEnabled) return;
+            poll.Start();
+            dumpTimer.Start();
+            autoQueue.Start();
+            Log.W("poll start reason=" + reason + " visible=" + win.IsVisible + " intervalMs=" + poll.Interval.TotalMilliseconds);
+        }
+
+        // The timers are built once and live for the process; their start/stop follows the window
+        // visibility, and every transition is logged with the reason (R1 request).
+        private void BuildTimers(string reason)
+        {
+            if (timersBuilt) return;
+            timersBuilt = true;
+            poll = new DispatcherTimer();
+            poll.Interval = TimeSpan.FromMilliseconds(80);              // REMOTE_CONTROL_POINTER_POLL_INTERVAL_MS
+            poll.Tick += delegate { lastPollTicks = DateTime.UtcNow.Ticks; UpdateClickThrough(); TickProgress(); HealRest(); };
+            dumpTimer = new DispatcherTimer();
+            dumpTimer.Interval = TimeSpan.FromMilliseconds(1000);
+            dumpTimer.Tick += delegate { if (!hoverBusy && !shifting) DumpRect(); };   // diagnostics must not interrupt a transition
+            autoQueue = new DispatcherTimer();
+            autoQueue.Interval = TimeSpan.FromMilliseconds(200);       // fMe is a 6000ms window, not a 1s guess
+            autoQueue.Tick += delegate
+            {
+                if (!queueOpen) return;
+                // clickThrough forces the close immediately (js@1751100 n && a(false))
+                if (core.Cfg.ClickThrough)
+                {
+                    long s0 = QueueSinceMs();
+                    Log.W("queue auto-collapse accepted=true changed=true reason=click-through since=" + s0);
+                    SetQueue(false);
+                    StampCollapse(s0, "auto-collapse:click-through");
+                    return;
+                }
+                // pointer on the card == the timer never runs (Folia: lit && !pointer && no search focus)
+                if (cursorInsideNow) return;
+                if (searchBox != null && searchBox.IsKeyboardFocused) return;
+                // the window starts at OPEN and is restarted by every hover: a queue opened with the
+                // pointer elsewhere still gets the full 6s (lastInsideTicks==0 must not mean "expired").
+                long since = QueueSinceMs();     // M3: identical to winrect.json's queueSinceOpenMs
+                if (since >= 6000)
+                {
+                    Log.W("queue auto-collapse accepted=true changed=true reason=6000ms-no-pointer since=" + since);
+                    SetQueue(false);
+                    // M3: queueOpen=0 must be in winrect.json the moment this line is written, not up to a
+                    // second later -- that dump gap is what let a "since=6066" log line and a winrect
+                    // queueOpen/queueHeight pair describe two different panels at the same time.
+                    StampCollapse(since, "auto-collapse:6000ms-no-pointer");
+                }
+            };
+            autoQueue.Start();
+            // L2: the heartbeat. 100ms nominal; what is recorded is the ACTUAL interval, so a UI-thread
+            // stall (the blur bake on a track change, a long layout pass) shows up as one big gap.
+            // Priority Send, not the DispatcherTimer default (Background): a Background tick is queued
+            // behind rendering and input, so it reports the dispatcher's scheduling slop as if it were a
+            // stall (measured on this machine: avg 109ms, peaks 138ms with NO track change at all). Send
+            // runs as soon as the UI thread is free, so a gap now means "the UI thread was busy", which is
+            // the fact the L2 acceptance is about.
+            uiThreadId = Thread.CurrentThread.ManagedThreadId;      // L2: proves which thread paid for a bake
+            heart = new DispatcherTimer(DispatcherPriority.Send);
+            heart.Interval = TimeSpan.FromMilliseconds(100);
+            heart.Tick += delegate
+            {
+                long now = DateTime.UtcNow.Ticks;
+                heartStamps[heartPos] = now;
+                heartPos = (heartPos + 1) % heartStamps.Length;
+                if (heartCount < heartStamps.Length) heartCount++;
+                heartTicks++;
+            };
+            heart.Start();
+            Log.W("heartbeat start intervalMs=100 ring=" + heartStamps.Length);
+        }
+
+        // ---- P0 probe (temporary, throttled to 500ms): raw cursor/rect/inside + the three-state result.
+        private long probeTicks;
+        private int probeBudget = 30;                     // R1: periodic poll lines stop after 30 to keep the log flat
+        private void ProbeBlocked(string why)
+        {
+            long nowT = DateTime.UtcNow.Ticks;
+            if (probeBudget <= 0) return;
+            if (probeTicks != 0 && nowT - probeTicks < TimeSpan.TicksPerMillisecond * 500) return;
+            probeBudget--;
+            probeTicks = nowT;
+            Log.W("probe BLOCKED " + why);
+        }
+        private void ProbeCursor(POINT pt, RECT r, bool inside, bool overStrip, bool focusVisible, bool idleNow, bool lit)
+        {
+            long nowT = DateTime.UtcNow.Ticks;
+            if (probeBudget <= 0) return;                     // periodic sampling is capped, the HTTP endpoint is not
+            if (probeTicks != 0 && nowT - probeTicks < TimeSpan.TicksPerMillisecond * 500) return;
+            probeBudget--;
+            probeTicks = nowT;
+            long age = lastInsideTicks == 0 ? -1 : (nowT - lastInsideTicks) / TimeSpan.TicksPerMillisecond;
+            Log.W("probe cur=" + pt.X + "," + pt.Y + " rect=" + r.Left + "," + r.Top + "," + r.Right + "," + r.Bottom +
+                  " inside=" + inside + " strip=" + overStrip + " ct=" + core.Cfg.ClickThrough + " trans=" + transparentNow +
+                  " focus=" + focusVisible + " idle=" + idleNow + " pin=" + pointerInside + " insideAgeMs=" + age +
+                  " litOverride=" + litOverride + " lit=" + lit + " hover=" + hover + " cover=" + coverState +
+                  " playHit=" + (btnPlay == null ? "-" : btnPlay.IsHitTestVisible.ToString()) +
+                  " playOp=" + (btnPlay == null ? "-" : F(btnPlay.Opacity)) +
+                  " queueH=" + F(queueH));
+        }
+
+        // ============================================================ N5 (brief-2 T1a/T1b/T1c/T1d)
+        // One single judge for data-lit. Before this, UpdateClickThrough, DbgPointer and DebugProbeCore each
+        // re-derived lit with a slightly different formula (vis / litOverride / pre_* applied in three ways), so
+        // the same state could be reported two ways and /ctl/lit:auto left the old value in place.
+        private bool litPreNoClickThrough = true;    // last evaluation of precondition 1
+        private bool litPreNotIdle = false;          // last evaluation of precondition 2
+        private bool litPrePointerOrFocus = false;   // last evaluation of precondition 3
+        private string litReason = "-";              // which precondition decided the value
+
+        // Applies to every reporter: window visible + !clickThrough + state!=null + (focus-visible or the
+        // pointer left the card less than LitLeaveMs ago), then the /ctl/lit:on|off override wins.
+        private bool ComputeLit()
+        {
+            State s = core.Store.Snapshot();
+            litPreNoClickThrough = !core.Cfg.ClickThrough;
+            litPreNotIdle = s != null;
+            bool focusVisible = tabFocusSeen && win.IsKeyboardFocusWithin;
+            long age = lastInsideTicks == 0 ? -1 : (DateTime.UtcNow.Ticks - lastInsideTicks) / TimeSpan.TicksPerMillisecond;
+            // M2: once the hold window is over, "the pointer was here" is no longer true, so the latch decays
+            // here instead of being published forever as pointerInside=true next to inside=false. The hold
+            // itself is unchanged: lit is still true for LitLeaveMs after the pointer leaves.
+            if (pointerInside && (age < 0 || age > LitLeaveMs)) pointerInside = false;
+            litPrePointerOrFocus = focusVisible || (pointerInside && age >= 0 && age <= LitLeaveMs);
+            bool lit = win.IsVisible && litPreNoClickThrough && litPreNotIdle && litPrePointerOrFocus;
+            if (litOverride >= 0) lit = litOverride == 1;
+            litReason = litOverride >= 0 ? "override=" + litOverride
+                      : (!win.IsVisible ? "hidden" : (!litPreNoClickThrough ? "clickThrough"
+                      : (!litPreNotIdle ? "idle" : (!litPrePointerOrFocus ? "pointerOut" : "pointerOrFocus"))));
+            return lit;
+        }
+
+        // ============================================================ M2 (click-chain brief): ONE inside judge
+        // Before this, four places decided "is the pointer on the card" for themselves: UpdateClickThrough
+        // (raw physical GetWindowRect), DebugProbeCore/dbg-pointer (its own copy, with a visibility guard),
+        // DbgPointer() (a third copy) and winrect.json (which published only the 800ms hold LATCH under the
+        // name "pointerInside" next to a contradicting "inside"). On top of that SrcRect() gated the HWND rect
+        // behind renderedSeen, so a window with a live HWND rect that had not fired ContentRendered PUBLISHED
+        // the derived DIP x phys rect while the judge used the HWND one -- two rectangles for one click chain.
+        // Now:
+        //   * ComputeInside() is the only code that asks GetCursorPos + GetWindowRect; the poll, ComputeLit's
+        //     hold, dbg-pointer, dbg-layout and winrect.json all read its result through InsideFresh().
+        //   * the judged rect is always the raw physical GetWindowRect on the HWND at the current DPI, and it
+        //     is what gets published (ReportRectPhys), so dbg-pointer can print both names side by side and an
+        //     outside reader can prove rectHwndPhys == rectUsedForInside.
+        //   * pointerInside keeps its meaning as the 800ms hold latch (contract-pinned behaviour, untouched);
+        //     the live value is published as cursorInsideNow / inside, and the latch now decays on its own.
+        private POINT insidePt;                      // cursor sample taken by the judge
+        private RECT insideRect;                     // HWND physical rect sample taken by the judge
+        private bool insideCursorOk, insideRectOk;   // which Win32 call failed, when one did
+        private bool rectIsHwnd;                     // true when the published rect IS insideRect
+        private string rectHwndPhysStr = "-";        // raw GetWindowRect as one string
+        private string rectUsedForInside = "-";      // the rect the judge actually compared against
+        private string insideSource = "-";           // what the judge is, in words
+        private long insideStampTicks;               // when the judge last ran
+
+        private bool ComputeInside()
+        {
+            POINT pt = new POINT();
+            RECT r = new RECT();
+            bool got = hwnd != IntPtr.Zero && Win.GetCursorPos(out pt);
+            bool gotR = hwnd != IntPtr.Zero && Win.GetWindowRect(hwnd, out r);
+            insidePt = pt; insideRect = r; insideCursorOk = got; insideRectOk = gotR;
+            insideStampTicks = DateTime.UtcNow.Ticks;
+            rectHwndPhysStr = gotR ? r.Left + "," + r.Top + "," + r.Right + "," + r.Bottom : "FAIL";
+            rectIsHwnd = gotR;
+            if (!got || !gotR)
+            {
+                rectUsedForInside = "FAIL(" + (got ? "cursor-ok" : "no-cursor") + "," + (gotR ? "rect-ok" : "no-rect") + ")";
+                insideSource = "ComputeInside: FAILED hwnd=" + hwnd;
+                return false;
+            }
+            rectUsedForInside = rectHwndPhysStr;
+            insideSource = "ComputeInside: GetCursorPos x GetWindowRect(hwnd) physical dpi=" + dpi + " physPerDip=" + phys.ToString("0.######", CultureInfo.InvariantCulture);
+            return pt.X >= r.Left && pt.X < r.Right && pt.Y >= r.Top && pt.Y < r.Bottom;
+        }
+
+        // A judge older than one poll tick is not evidence, so a reporter refreshes it instead of quoting a
+        // stale value next to a fresh one. The refreshed sample also feeds cursorInsideNow, which is what the
+        // queue auto-collapse timer and the hit-test guard read.
+        private bool InsideFresh()
+        {
+            bool v = ComputeInside();
+            cursorInsideNow = v;
+            return v;
+        }
+
+        // strip = left StripW DIP of the JUDGED rect (SPEC 5.2) -- one implementation for every caller.
+        private bool OverStrip(bool inside)
+        {
+            if (!inside || !insideRectOk) return false;
+            int stripPhys = (int)Math.Round(StripW * phys);
+            return (insidePt.X - insideRect.Left) < stripPhys;
+        }
+
+        // M2: the rectangle every reporter publishes. Same numbers the judge compared the cursor against.
+        private double[] ReportRectPhys()
+        {
+            if (rectIsHwnd) return new double[] { insideRect.Left, insideRect.Top, insideRect.Right - insideRect.Left, insideRect.Bottom - insideRect.Top };
+            return DerivedPhysRect();
+        }
+
+        // M3: one definition of "how long has the queue been open", used by the auto-collapse timer AND by
+        // winrect.json/dbg-pointer, so a log line saying since=6066 and a winrect saying queueOpen=0 can no
+        // longer be two different stories about the same panel.
+        private long QueueSinceMs()
+        {
+            long anchor = queueOpenTicks;
+            if (lastInsideTicks > anchor) anchor = lastInsideTicks;
+            return (DateTime.UtcNow.Ticks - anchor) / TimeSpan.TicksPerMillisecond;
+        }
+
+        // T1a: returning to auto must re-judge from the CURRENT pointer state right now. The 80ms poll is
+        // stopped while the window is hidden, so without this call hover/coverState keep whatever /ctl/lit:on
+        // left behind and winrect.json reports a stale "expanded".
+        private string ReJudgeLit(string why)
+        {
+            bool lit = ComputeLit();
+            if (lit != hover) SetLit(lit);
+            else ApplyCoverChoice(true);              // same verdict: still re-assert the cover from it
+            DumpRect();
+            Log.W("lit rejudge why=" + why + " lit=" + lit + " reason=" + litReason +
+                  " hover=" + hover + " coverState=" + coverState + " litOverride=" + litOverride);
+            return litReason;
+        }
+
+        // T1b: name the source of the reported rectangle by what actually produced it.
+        // M2: the source is named after the rect ComputeInside() actually used, not after ContentRendered.
+        private string RectSource() { return rectIsHwnd ? "hwnd" : "derived"; }
+        private string RectSourceDetail()
+        {
+            return rectIsHwnd
+                ? "GetWindowRect on the rendered HWND (same rect ComputeInside() judged the cursor against)"
+                : "position.json/WPF DIP x current physPerDip (never rendered: the HWND rect is not authoritative yet)";
+        }
+        // The rectangle that dbg-pointer / winrect.json publish as "the" rect: the HWND value once the
+        // window has actually rendered, the derived value (saved position + live DPI) while it has not.
+        private double[] SrcRect(RECT r, bool gotR)
+        {
+            // M2: publish the HWND rect whenever GetWindowRect answered. The old extra requirement of
+            // renderedSeen made the published rect and the judged rect diverge for the same window.
+            if (gotR) return new double[] { r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top };
+            return DerivedPhysRect();
+        }
+        private double[] DerivedPhysRect()
+        {
+            double l = double.IsNaN(win.Left) ? 0 : win.Left, t = double.IsNaN(win.Top) ? 0 : win.Top;
+            double w = double.IsNaN(win.Width) ? WinW : win.Width, h = double.IsNaN(win.Height) ? WinH : win.Height;
+            return new double[] { l * phys, t * phys, w * phys, h * phys };
+        }
+
+        // T1d: an element is only really painted when it and every ancestor is Visible, so "opacity 1" on a
+        // Collapsed TextBlock must not be published as if the line were on screen. Both winrect.json and
+        // dbg-layout now derive the same four numbers from these helpers.
+        private bool VisChain(FrameworkElement fe)
+        {
+            Visual v = fe;
+            while (v != null && !ReferenceEquals(v, surface))
+            {
+                FrameworkElement fe2 = v as FrameworkElement;
+                if (fe2 != null && fe2.Visibility != Visibility.Visible) return false;
+                v = VisualTreeHelper.GetParent(v) as Visual;
+            }
+            return true;
+        }
+        private double EffOpacity(FrameworkElement fe)
+        {
+            if (fe == null) return -1;
+            return VisChain(fe) ? fe.Opacity : 0.0;
+        }
+        private double TargetOp(UIElement e)
+        {
+            if (e == null) return -1;
+            double tv;
+            return litTarget.TryGetValue(e, out tv) ? tv : -1;   // -1 == not a lit-group member
+        }
+
+        // T1c: long test runs burn the 30-line probe budget in seconds; this re-arms it over HTTP.
+        public string ResetProbe(int budget)
+        {
+            int before = probeBudget;
+            if (budget < 1) budget = 30;
+            probeBudget = budget;
+            probeTicks = 0;
+            string j = new JsonWriter().Begin().B("ok", true).Str("verb", "dbg-probe-reset")
+                .Str("at", DateTime.Now.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture))
+                .Num("budgetBefore", before).Num("budget", budget)
+                .B("throttleReset", true).Num("probeBudgetLeft", probeBudget).End().ToString();
+            Log.W("dbg-probe-reset " + j);
+            return j;
+        }
+
+        private void StopPoll(string reason)
+        {
+            if (!timersBuilt) return;
+            if (!poll.IsEnabled && !dumpTimer.IsEnabled && !autoQueue.IsEnabled) return;
+            poll.Stop(); dumpTimer.Stop(); autoQueue.Stop();
+            if (hover) SetLit(false);                                  // never leave a stale lit behind
+            Log.W("poll stop reason=" + reason + " visible=" + win.IsVisible);
+        }
+
+        // L2: newest-first walk of the heartbeat ring - every gap whose NEWER stamp is inside windowMs,
+        // plus the newest lastN gaps as a chronological series for the evidence line.
+        private double[] UiGap(int windowMs, int lastN, out string series)
+        {
+            long now = DateTime.UtcNow.Ticks;
+            int len = heartStamps.Length;
+            int total = Math.Min(heartCount, len);
+            double max = -1, sum = 0; int n = 0;
+            List<double> recent = new List<double>();
+            for (int i = 0; i + 1 < total; i++)
+            {
+                long a = heartStamps[((heartPos - 1 - i) % len + len) % len];
+                long b = heartStamps[((heartPos - 2 - i) % len + len) % len];
+                if ((now - a) / (double)TimeSpan.TicksPerMillisecond > windowMs) break;   // ring is chronological
+                double gap = (a - b) / (double)TimeSpan.TicksPerMillisecond;
+                if (gap > max) max = gap;
+                sum += gap; n++;
+                if (recent.Count < lastN) recent.Add(gap);
+            }
+            recent.Reverse();
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < recent.Count; i++)
+            {
+                if (i > 0) sb.Append(',');
+                sb.Append(recent[i].ToString("0.#", CultureInfo.InvariantCulture));
+            }
+            series = sb.ToString();
+            return new double[] { max, n > 0 ? sum / n : -1, n };
+        }
+
+        // isPointOverRemoteControlStrip: strip = left 178 DIP, always pass-through (SPEC 5.2)
+        private void UpdateClickThrough()
+        {
+            if (hwnd == IntPtr.Zero) { ProbeBlocked("early hwnd=" + hwnd); return; }
+            if (!win.IsVisible)
+            {
+                if (hover) SetLit(false);                                  // R1: a hidden card is never lit, and the value must not stay stale
+                if (cursorInsideNow) { cursorInsideNow = false; }
+                prevCursorInside = false;                                  // L3: keep the transition stamp honest across a hide/show
+                ProbeBlocked("early visible=false");
+                return;
+            }
+            bool inside = ComputeInside();            // M2: the only inside judge in the build
+            if (!insideCursorOk) { ProbeBlocked("early GetCursorPos=false"); return; }
+            if (!insideRectOk) { ProbeBlocked("early GetWindowRect=false"); return; }
+            POINT pt = insidePt;
+            RECT r = insideRect;
+            bool overStrip = OverStrip(inside);
+            // main process polls cursor x bounds every 80ms; data-lit needs the pointer (or keyboard
+            // focus), survives 800ms after the pointer leaves, and is forced off by click-through/idle.
+            cursorInsideNow = inside;                                        // D2: fresh sample, 80ms old at most
+            // L3: stamp the false->true transition (and clear the lit stamp with it). Nothing here feeds the
+            // judge below - it only makes "pointer entered -> lit applied" measurable as litLatencyMs.
+            if (inside && !prevCursorInside) { insideStartTicks = DateTime.UtcNow.Ticks; litAppliedTicks = 0; }
+            prevCursorInside = inside;
+            if (inside) { pointerInside = true; lastInsideTicks = DateTime.UtcNow.Ticks; queueHoverTicks = lastInsideTicks; }
+            bool focusVisible = tabFocusSeen && win.IsKeyboardFocusWithin;
+            State sn = core.Store.Snapshot();
+            bool idleNow = sn == null;
+            bool lit = ComputeLit();          // N5: one judge for the poll, every reporter AND /ctl/lit:auto
+            ProbeCursor(pt, r, inside, overStrip, focusVisible, idleNow, lit);
+            SetLit(lit);
+            bool want = !core.Cfg.ClickThrough ? false : (!inside ? true : overStrip);
+            if (want == transparentNow) return;
+            long ex = Win.GetExStyle(hwnd);
+            if (want) ex |= Win.WS_EX_TRANSPARENT | Win.WS_EX_LAYERED;
+            else ex &= ~Win.WS_EX_TRANSPARENT;
+            Win.SetExStyle(hwnd, ex);
+            transparentNow = want;
+            core.LastClickThrough = want;
+        }
+
+        private void BarDown(object s, MouseButtonEventArgs e)
+        {
+            e.Handled = true;
+            barCanvas.CaptureMouse();
+            seekPreview = RatioAt(e.GetPosition(barCanvas));
+            PaintProgress(seekPreview);
+        }
+        private void BarMove(object s, MouseEventArgs e)
+        {
+            if (!barCanvas.IsMouseCaptured) return;
+            seekPreview = RatioAt(e.GetPosition(barCanvas));
+            PaintProgress(seekPreview);
+        }
+        private void BarUp(object s, MouseButtonEventArgs e)
+        {
+            if (!barCanvas.IsMouseCaptured) return;
+            barCanvas.ReleaseMouseCapture();
+            e.Handled = true;
+            State st = core.Store.Snapshot();
+            double dur = st == null ? 0 : st.Dur;
+            double ratio = RatioAt(e.GetPosition(barCanvas));
+            seekPreview = -1;
+            if (dur > 0) core.IssueCommand("seek", Command.NumArg(Math.Round(ratio * dur, 1)));
+            seekGuardTicks = DateTime.UtcNow.Ticks + TimeSpan.TicksPerMillisecond * 800;   // releaseSeek guard
+            Log.W("seek released ratio=" + ratio.ToString("0.000", CultureInfo.InvariantCulture) + " guard=800ms");
+            PaintProgress(ratio);
+            Refresh();
+        }
+        private double RatioAt(Point p)
+        {
+            double w = barCanvas.Width > 0 ? barCanvas.Width : barCanvas.ActualWidth;
+            if (w <= 0) return 0;
+            double r = p.X / w;
+            if (r < 0) r = 0;
+            if (r > 1) r = 1;
+            return r;
+        }
+
+        // ============================================================ L5 (real-click brief): ONE hit verdict
+        // What the old click line printed as  hit=  was transparentNow - the window's WS_EX_TRANSPARENT flag,
+        // i.e. "the OS is currently passing clicks through this window" - while mouse-diag printed
+        // keyOfHit/keyAtPoint from the visual hit test. Two unrelated facts, one word. The user's "cannot
+        // close the card by hand" report was read off server.log 21:25:35.277-283:
+        //     mouse-diag WM LBUTTONDOWN clientPt=713,19 ... lit=True
+        //     mouse-diag wm dip=570.4,15.2 ... hit=Border keyOfHit=close keyAtPoint=close
+        //     click key="close" accepted=true lit=True idle=False hit=False
+        //     poll stop reason=hidden visible=False        <- Hide() DID run, the card DID go invisible
+        // so hit=False was never a veto (nothing in Click() read it); it was clickThroughCfg=false restated.
+        // The card came back because the NEXT thing that happened was an agent restarting the exe, and a cold
+        // start shows the window (21:26:37.211 poll start reason=visible) - not because close was refused.
+        // Fixed by making the two names one fact: the pointer path runs the SAME hit test the diagnostic runs,
+        // adopts keyOfHit, WARNs on a mismatch, and prints both. The only veto left on that path is "not lit",
+        // which is the contract (an idle/unlit deck is invisible and must not be clickable); it is enforced
+        // first by FadeGroup's IsHitTestVisible=false and now a second time here.
+        public void ClickFromPointer(string key, Point p)
+        {
+            string keyOfHit = "no-key", keyAtPoint = "no-key";
+            try
+            {
+                HitTestResult hr = VisualTreeHelper.HitTest(win, p);
+                keyOfHit = KeyAtVisual(hr == null ? null : hr.VisualHit as Visual);
+            }
+            catch (Exception eh) { keyOfHit = "throw:" + eh.GetType().Name; }
+            try { keyAtPoint = KeyAtPoint(p); } catch { }
+            bool usable = keyOfHit != "no-key" && keyOfHit != "-" && !keyOfHit.StartsWith("throw", StringComparison.Ordinal);
+            string adopted = usable ? keyOfHit : key;
+            if (adopted != key)
+                Log.W("WARN click key mismatch raised=" + key + " keyOfHit=" + keyOfHit + " keyAtPoint=" + keyAtPoint +
+                      " -> adopting keyOfHit (" + adopted + ")");
+            if (!hover)
+            {
+                Log.W("click key=\"" + adopted + "\" accepted=false lit=False idle=" + (core.Store.Snapshot() == null) +
+                      " hit=False keyOfHit=" + keyOfHit + " keyAtPoint=" + keyAtPoint + " via=pointer reason=not-lit" +
+                      " clickThroughNow=" + transparentNow);
+                return;
+            }
+            ClickCore(adopted, "pointer", keyOfHit, keyAtPoint, usable ? "True" : "False");
+        }
+
+        // API / synthetic entry: POST /click, /ctl/theme|top|queue|taskbar and the keyboard path. There is no
+        // pointer to test here, so the REQUESTED key is authoritative (that is the /click contract) and hit=
+        // is printed as "api" instead of pretending to be a hit-test verdict. keyOfHit/keyAtPoint are still
+        // resolved from wherever the cursor happens to be, so one grep shows both facts side by side.
+        public void Click(string key)
+        {
+            string koh = "no-key", kap = "no-key";
+            try
+            {
+                POINT cp;
+                if (hwnd != IntPtr.Zero && Win.GetCursorPos(out cp))
+                {
+                    Point rel = win.PointFromScreen(new Point(cp.X / phys, cp.Y / phys));
+                    HitTestResult hr = VisualTreeHelper.HitTest(win, rel);
+                    koh = KeyAtVisual(hr == null ? null : hr.VisualHit as Visual);
+                    kap = KeyAtPoint(rel);
+                }
+            }
+            catch { }
+            ClickCore(key, "api", koh, kap, "api");
+        }
+
+        private void ClickCore(string key, string via, string keyOfHit, string keyAtPoint, string hit)
+        {
+            State s = core.Store.Snapshot();
+            if (key == null) return;
+            // every hit-test that reaches a key is logged, so a real click is provable from server.log
+            Log.W("click key=\"" + key + "\" accepted=true lit=" + hover + " idle=" + (s == null) + " hit=" + hit +
+                  " keyOfHit=" + (keyOfHit ?? "-") + " keyAtPoint=" + (keyAtPoint ?? "-") + " via=" + via +
+                  " clickThroughNow=" + transparentNow);
+            // queue row keys are q<digits>; "queue" is the icon key and must not be eaten here
+            if (key.Length > 1 && key[0] == (char)113 && key[1] >= (char)48 && key[1] <= (char)57)
+            {
+                int idx;
+                if (int.TryParse(key.Substring(1), out idx))
+                {
+                    // D5: queue row click -> playIndex, arg = 0-based index
+                    core.IssueCommand("playIndex", Command.NumArg(idx));
+                    Log.W("queue row click -> playIndex arg=" + idx);
+                }
+                return;
+            }
+            switch (key)
+            {
+                case "theme":
+                    string[] order = new string[] { "dark", "wash", "light" };   // palette: 纯深 / wash / 纯浅
+                    int oi = Array.IndexOf(order, theme);
+                    theme = order[(oi + 1) % order.Length];
+                    core.Cfg.Theme = theme;
+                    core.Cfg.Save();
+                    ApplyTheme();
+                    Refresh();
+                    break;
+                case "pin":
+                    win.Topmost = !win.Topmost;
+                    core.Cfg.Topmost = win.Topmost;
+                    core.Cfg.Save();
+                    break;
+                case "close": Hide(); break;
+                case "toggle":
+                case "play":                                  // P0: the deck button registers the key "play" (hotspots/contract name);
+                    core.IssueCommand("toggle", null); break;      // it used to fall through to default -> the play/pause key did nothing
+
+                case "next": core.IssueCommand("next", null); break;
+                case "prev": core.IssueCommand("prev", null); break;
+                case "like": core.IssueCommand("like", Command.BoolArg(!(s != null && s.Liked))); break;
+                case "loop":
+                    string[] loops = new string[] { "off", "list", "one", "shuffle" };
+                    int li = s == null ? 0 : Array.IndexOf(loops, s.Loop);
+                    if (li < 0) li = 0;
+                    core.IssueCommand("loop", Command.StrArg(loops[(li + 1) % loops.Length]));
+                    break;
+                case "queue": SetQueue(!queueOpen); break;
+                case "more": core.IssueCommand("toggleMain", null); break;
+                case "taskbar": SetTaskbar(!core.Cfg.Taskbar); break;
+                default: return;
+            }
+        }
+
+        public void SetCoverMode(string mode)
+        {
+            if (string.IsNullOrEmpty(mode)) return;
+            coverMode = mode.ToLowerInvariant();
+            core.Cfg.CoverMode = coverMode;
+            core.Cfg.Save();
+            ApplyCoverChoice(true);
+            Refresh();
+            Log.W("coverMode=" + coverMode);
+        }
+
+        private static bool HasLyricLine(State s)
+        {
+            return s != null && s.Lyrics != null && !string.IsNullOrWhiteSpace(s.Lyrics.Line);
+        }
+
+        private CoverState PickCoverState()
+        {
+            if (coverMode == "sleeve") return CoverState.Sleeve;
+            if (coverMode == "card") return CoverState.Card;
+            if (coverMode == "line") return CoverState.Line;
+            State s = core.Store.Snapshot();
+            if (s == null) return CoverState.Sleeve;
+            if (core.Cfg.ExpandCover) return CoverState.Sleeve;
+            // Folia uses the line face only when a lyric hero exists. Instrumental gaps and
+            // tracks without lyrics use the 56 DIP card cover + large song title instead.
+            return HasLyricLine(s) ? CoverState.Line : CoverState.Card;
+        }
+
+        private void ApplyCoverChoice(bool force)
+        {
+            State s = core.Store.Snapshot();
+            CoverState want = hover ? (HasLyricLine(s) ? CoverState.Expanded : CoverState.Card) : PickCoverState();
+            if (want == coverState && !force) return;
+            bool changed = want != coverState;
+            SetCoverTransform(want, changed);
+        }
+
+        // ---------------- queue
+        // reopen the panel from config without re-issuing openQueue to the page
+        public void RestoreQueue() { queueOpen = true; queueOpenTicks = DateTime.UtcNow.Ticks; queueStateSource = "RestoreQueue(config)"; LayoutQueue(false); }
+
+        // M3: one place records a collapse, so the log line, queueStateSource and winrect.json describe the
+        // same event instead of three snapshots taken at three different moments.
+        private void StampCollapse(long sinceMs, string why)
+        {
+            queueCollapseSince = sinceMs;
+            queueCollapseTicks = DateTime.UtcNow.Ticks;
+            queueStateSource = why;
+            queueOpen = false;                       // never leave the flag set behind this write
+            DumpRect();
+        }
+
+        public void SetQueue(bool open)
+        {
+            queueOpen = open;
+            queueStateSource = open ? "SetQueue(open)" : "SetQueue(close)";
+            if (open) { queueOpenTicks = DateTime.UtcNow.Ticks; queueSettledTicks = 0; queueCollapseSince = -1; }   // fMe window starts here
+            core.Cfg.QueueOpen = open;
+            core.Cfg.Save();
+            // v1.3 #4: opening uses openQueue(true), closing uses the new closeQueue command
+            if (open) core.IssueCommand("openQueue", Command.BoolArg(true));
+            else core.IssueCommand("closeQueue", null);
+            LayoutQueue(true);
+        }
+
+        // wanted = 46 + clamp(n,1,8)*36 + 6, min 160 (SPEC 1.6)
+        private double WantedQueueHeight(int rows)
+        {
+            int n = rows < 1 ? 1 : (rows > QueueMaxRows ? QueueMaxRows : rows);
+            double wanted = QueueBase + n * QueueRowH + QueueGap;
+            if (wanted < QueueMinH) wanted = QueueMinH;
+            return wanted;
+        }
+
+        private void LayoutQueue(bool animate)
+        {
+            State s = core.Store.Snapshot();
+            if (s == null) queueOpen = false;                     // no data -> no panel, window stays 602x184
+            int shown = s == null ? 1 : s.Queue.Count;
+            double wanted = queueOpen ? WantedQueueHeight(shown) : 0;
+            if (wanted > 0)
+            {
+                RECT wa = Win.WorkAreaAt((int)PhysicalLeft(), (int)PhysicalTop());
+                double roomDown = wa.Bottom - (PhysicalTop() + WinH * phys);
+                double roomUp = PhysicalTop() - wa.Top;
+                roomDown = roomDown / phys;
+                roomUp = roomUp / phys;
+                double least = wanted < QueueMinH ? wanted : QueueMinH;
+                string preferred = core.Cfg.QueueDir;
+                string side;
+                if (!string.IsNullOrEmpty(preferred) && (preferred == "down" ? roomDown : roomUp) >= least) side = preferred;
+                else if (roomDown >= wanted) side = "down";
+                else if (roomUp >= wanted) side = "up";
+                else side = roomUp > roomDown ? "up" : "down";
+                queueDown = side == "down";
+                core.Cfg.QueueDir = side;
+                double cap = queueDown ? roomDown : roomUp;
+                double h = wanted;
+                if (h > Math.Max(least, cap)) h = Math.Max(least, cap);
+                queueH = h;
+            }
+            else queueH = 0;
+            BuildQueueRows(s);
+            if (!animate) { PositionQueue(); DumpRect(); return; }
+            if (queueH > 0)
+            {
+                // Q8: isShifting -> 90ms -> 2 Loaded hops -> setExpansion, then 340ms [.32,.72,0,1]
+                QueueShift(delegate
+                {
+                    double h0 = win.Height;                       // still the compact height
+                    PositionQueue();
+                    Duration d = new Duration(TimeSpan.FromMilliseconds(340));
+                    AnimFrom(win, Window.HeightProperty, h0, WinH + queueH, d, Settle(), TimeSpan.FromMilliseconds(0));
+                    queuePanel.Opacity = 0.4;
+                    Anim(queuePanel, UIElement.OpacityProperty, 1.0, d, Settle(), TimeSpan.FromMilliseconds(0));
+                    queuePanelRender.Y = queueDown ? 8 : -8;
+                    Anim(queuePanelRender, TranslateTransform.YProperty, 0, d, Settle(), TimeSpan.FromMilliseconds(0));
+                    queueList.Opacity = 0;
+                    Anim(queueList, UIElement.OpacityProperty, 1.0, new Duration(TimeSpan.FromMilliseconds(220)), Settle(), TimeSpan.FromMilliseconds(80));
+                    // fMe counts from the settled panel, not from the click: 90ms shift + 340ms expansion,
+                    // re-stamp the anchor when the rect has actually reached its full height.
+                    DispatcherTimer ta = new DispatcherTimer();
+                    ta.Interval = TimeSpan.FromMilliseconds(470);
+                    ta.Tick += delegate { ta.Stop(); queueOpenTicks = DateTime.UtcNow.Ticks; queueSettledTicks = queueOpenTicks; Log.W("queue expand settled: 6s window re-anchored"); };
+                    ta.Start();
+                });
+            }
+            else
+            {
+                // collapse: down 200ms / up 155ms with [.4,0,.7,.2]; local height settles 220ms later
+                double ms = queueDown ? 200 : 155;
+                Duration d = new Duration(TimeSpan.FromMilliseconds(ms));
+                Anim(win, Window.HeightProperty, WinH, d, EaseExit(), TimeSpan.FromMilliseconds(0));
+                Anim(queuePanel, UIElement.OpacityProperty, 0.0, d, EaseExit(), TimeSpan.FromMilliseconds(0));
+                DispatcherTimer t = new DispatcherTimer();
+                t.Interval = TimeSpan.FromMilliseconds(220);
+                t.Tick += delegate { t.Stop(); PositionQueue(); DumpRect(); };
+                t.Start();
+            }
+            DumpRect();
+        }
+
+        // Q8 shift handshake: hide the panel, wait 90ms, hop twice on DispatcherPriority.Loaded
+        // (the WPF stand-in for 2 requestAnimationFrame), then run the expansion.
+        private void QueueShift(Action done)
+        {
+            shifting = true;
+            if (queuePanel != null) queuePanel.Opacity = 0;
+            DispatcherTimer t = new DispatcherTimer();
+            t.Interval = TimeSpan.FromMilliseconds(90);
+            int[] hops = new int[] { 0 };
+            Action step = null;
+            step = delegate
+            {
+                hops[0]++;
+                if (hops[0] < 2) win.Dispatcher.BeginInvoke(DispatcherPriority.Loaded, step);
+                else { shifting = false; if (done != null) done(); }
+            };
+            t.Tick += delegate { t.Stop(); win.Dispatcher.BeginInvoke(DispatcherPriority.Loaded, step); };
+            t.Start();
+        }
+
+        // data-shifting=true -> whole window content hidden for 90ms (SPEC 2.5)
+        private void HideForShift()
+        {
+            try
+            {
+                surface.Opacity = 0;
+                DispatcherTimer t = new DispatcherTimer();
+                t.Interval = TimeSpan.FromMilliseconds(90);
+                t.Tick += delegate
+                {
+                    t.Stop();
+                    DoubleAnimation a = new DoubleAnimation();
+                    a.To = 1;
+                    a.Duration = new Duration(TimeSpan.FromMilliseconds(140));
+                    Storyboard sb = new Storyboard();
+                    Storyboard.SetTarget(a, surface);
+                    Storyboard.SetTargetProperty(a, new PropertyPath(UIElement.OpacityProperty));
+                    sb.Children.Add(a);
+                    sb.Begin();
+                };
+                t.Start();
+            }
+            catch { }
+        }
+
+        private void BuildQueueRows(State s)
+        {
+            if (queueList == null) return;
+            StringBuilder visualKey = new StringBuilder();
+            visualKey.Append(theme).Append('|');
+            if (s == null) visualKey.Append("null");
+            else
+            {
+                visualKey.Append(s.Queue.Count);
+                int keyRows = 0;
+                foreach (QueueRow row in s.Queue)
+                {
+                    if (keyRows++ >= QueueMaxRows) break;
+                    visualKey.Append('|').Append(row.Index).Append('|').Append(row.Id).Append('|')
+                             .Append(row.Current ? '1' : '0').Append('|').Append(row.Title).Append('|').Append(row.Artist);
+                }
+            }
+            string nextQueueKey = visualKey.ToString();
+            if (nextQueueKey == queueVisualKey) return;   // position/tick updates do not rebuild 8 x 3 text nodes
+            queueVisualKey = nextQueueKey;
+            queueList.Children.Clear();
+            queueRowHits.Clear();
+            if (s == null) return;
+            Color ink = Ink();
+            int n = 0;
+            foreach (QueueRow row in s.Queue)
+            {
+                if (n++ >= QueueMaxRows) break;
+                Border rowHit = new Border();
+                rowHit.Height = QueueRowH;
+                rowHit.Cursor = Cursors.Hand;
+                Border hl = new Border();
+                hl.Height = QueueRowInner;
+                hl.Margin = new Thickness(2, 2, 2, 2);
+                hl.CornerRadius = new CornerRadius(9);
+                hl.Background = row.Current ? A(0.12) : Brushes.Transparent;
+                Grid inner = new Grid();
+                inner.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(QueueRowNameW) });
+                inner.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                inner.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                TextBlock idx = MkText(10.5, 14, FontWeights.Medium, row.Current ? A(1.0) : A(0.32));
+                if (row.Current) idx.FontWeight = FontWeights.Bold;
+                idx.TextAlignment = TextAlignment.Right;
+                idx.Text = (row.Index < 0 ? n : row.Index + 1).ToString(CultureInfo.InvariantCulture);
+                idx.VerticalAlignment = VerticalAlignment.Center;
+                idx.Padding = new Thickness(0, 0, 6, 0);
+                Grid.SetColumn(idx, 0);
+                inner.Children.Add(idx);
+                TextBlock nm = MkText(12.5, 16, row.Current ? FontWeights.Bold : FontWeights.Medium, row.Current ? A(1.0) : A(0.86));
+                nm.Text = row.Title;
+                nm.TextTrimming = TextTrimming.CharacterEllipsis;
+                nm.VerticalAlignment = VerticalAlignment.Center;
+                Grid.SetColumn(nm, 1);
+                inner.Children.Add(nm);
+                TextBlock ar = MkText(11, 14, FontWeights.Normal, A(0.45));
+                ar.Text = row.Artist;
+                ar.MaxWidth = 110;
+                ar.TextTrimming = TextTrimming.CharacterEllipsis;
+                ar.VerticalAlignment = VerticalAlignment.Center;
+                ar.Margin = new Thickness(6, 0, 6, 0);
+                Grid.SetColumn(ar, 2);
+                inner.Children.Add(ar);
+                hl.Child = inner;
+                rowHit.Child = hl;
+                int captured = row.Index < 0 ? (n - 1) : row.Index;
+                rowHit.MouseLeftButtonDown += delegate (object sender, MouseButtonEventArgs e)
+                {
+                    e.Handled = true;
+                    core.IssueCommand("playIndex", Command.NumArg(captured));
+                    Log.W("queue row click playIndex arg=" + captured);
+                };
+                rowHit.MouseEnter += delegate { hl.Background = A(0.08); };
+                rowHit.MouseLeave += delegate { hl.Background = captured == CurrentIndex(s) ? A(0.12) : Brushes.Transparent; };
+                queueList.Children.Add(rowHit);
+                queueRowHits.Add(rowHit);
+                hits["q" + captured] = rowHit;
+            }
+            if (s.Queue.Count == 0)
+            {
+                TextBlock note = MkText(11.5, 16, FontWeights.Normal, A(0.45));
+                note.Text = "队列为空";
+                note.Margin = new Thickness(18, 10, 18, 10);
+                queueList.Children.Add(note);
+            }
+        }
+
+        private static int CurrentIndex(State s)
+        {
+            if (s == null) return -1;
+            for (int i = 0; i < s.Queue.Count; i++) if (s.Queue[i].Current) return s.Queue[i].Index < 0 ? i : s.Queue[i].Index;
+            return -1;
+        }
+
+        public void SetTaskbar(bool on)
+        {
+            core.Cfg.Taskbar = on;
+            core.Cfg.Save();
+            try { win.ShowInTaskbar = on; } catch (Exception e) { Log.W("taskbar " + e.Message); }
+            if (hwnd != IntPtr.Zero)
+            {
+                long ex = Win.GetExStyle(hwnd);
+                if (on) ex &= ~Win.WS_EX_TOOLWINDOW; else ex |= Win.WS_EX_TOOLWINDOW;
+                Win.SetExStyle(hwnd, ex);
+            }
+        }
+
+        // K1: the rounded clip has to coincide with the 18px card outline. cardCanvas is the CHILD of ring,
+        // a Border with BorderThickness 1, so it is arranged at (1,1) inside cardHost and a clip rect of
+        // (0,0,594,176) would put the arc 1px low/right of the outline (measured: TL dy6 23px vs Folia 19px,
+        // i.e. +4 > the +3 tolerance). theme "transparent" drops that border to 0, so the offset goes with it.
+        // H2: at rest the cover morph base values must win even if a storyboard clock got paused mid-flight
+        // (session lock / sleep inside the 560ms settle): a frozen clock holds coverTranslate at an interim
+        // offset and the sleeve shows desktop-coloured strips along the cover left/top edge (user photo
+        // forensics: 12px left stripe + top strip = cover offset, not a mask radius). The 80ms poll snaps the
+        // transform back and clears any stuck animation once the morph window has passed.
+        private void HealRest()
+        {
+            if (coverHost == null || coverTranslate == null || coverScale == null) return;
+            if (DateTime.UtcNow.Ticks < morphUntilTicks) return;
+            if (Math.Abs(coverTranslate.X - tgtTx) < 0.25 && Math.Abs(coverTranslate.Y - tgtTy) < 0.25 &&
+                Math.Abs(coverScale.ScaleX - tgtSc) < 0.004 && Math.Abs(coverScale.ScaleY - tgtSc) < 0.004) return;
+            coverTranslate.BeginAnimation(TranslateTransform.XProperty, null);
+            coverTranslate.BeginAnimation(TranslateTransform.YProperty, null);
+            coverScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+            coverScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+            coverTranslate.X = tgtTx; coverTranslate.Y = tgtTy; coverScale.ScaleX = tgtSc; coverScale.ScaleY = tgtSc;
+            Log.W("rest heal snap cover transform -> " + F(tgtTx) + "," + F(tgtTy) + " sc=" + F(tgtSc));
+        }
+
+        // USER 2026-11-10 #2: Folia's lit paper. .remote-paper is clipped to inset(0 0 0 174px), so in lit the
+        // card simply does not exist left of 174 - the strip is not "filled" or "veiled", it is gone. That is
+        // what the user asked for twice: keep the cover-shrink animation, remove the empty block. The clip is
+        // the only thing that changes; every lit coordinate (thumb 196, title 227, lyric 196) was already
+        // written for this geometry, which is why no other element has to move.
+        private void ApplyPaper(bool narrow, bool animate)
+        {
+            if (cardHost == null) return;
+            paperNarrow = narrow;
+            // USER 2026-11-10 #5: the lit card keeps ALL FOUR corners rounded (r18). The hard square cut from
+            // #3 existed only to hide the drop shadow that leaked into the two left corner notches - and that
+            // leak was mostly the RoundedRect() sweep bug (#4) scooping the cover/thumb corners, not the shadow.
+            // With #4 fixed a rounded clip renders clean, so the plain rounded rect is back. RectangleGeometry
+            // rounds the rect it is given, so animating its Rect from (0,0,594,176) to (170,0,424,176) rounds
+            // the NEW left corners as well - exactly what the user asked for.
+            if (paperFace == null)
+            {
+                paperFace = new RectangleGeometry(new Rect(0, 0, CardW, CardH), Radius, Radius);
+                cardHost.Clip = paperFace;
+            }
+            Rect to = narrow ? new Rect(PaperCut, 0, PaperW, CardH) : new Rect(0, 0, CardW, CardH);
+            Duration d = new Duration(TimeSpan.FromMilliseconds(animate ? (narrow ? LitInMs : LitOutMs) : 0));
+            KeySpline ks = narrow ? Glide() : Settle();
+            if (animate) AnimRect(paperFace, to, d, ks);
+            else { paperFace.BeginAnimation(RectangleGeometry.RectProperty, null); paperFace.Rect = to; }
+            if (!animate) { }
+            else if (animProbe > 0) { animProbe--; ArmAnimProbe(); }
+            if (shadowShape != null)
+            {
+                // projection follows the same rounded silhouette in both states
+                shadowShape.CornerRadius = new CornerRadius(Radius);
+                // #7: animating Width re-measured the shadow subtree every frame (layout on the UI thread
+                // mid-animation). The carrier is hidden behind the card except for the 4 DIP gutter, so an
+                // instant width is invisible and the clip animation alone carries the motion.
+                double w = narrow ? PaperW : CardW;
+                shadowShape.BeginAnimation(FrameworkElement.WidthProperty, null);
+                shadowShape.Width = w;
+            }
+            Log.W("paper " + (narrow ? "cut at " + F(PaperCut + Gutter) + " DIP (face " + F(PaperW) + ")" : "full " + F(CardW)));
+        }
+
+        private void ArmAnimProbe()
+        {
+            if (animProbeHook != null) { try { CompositionTarget.Rendering -= animProbeHook; } catch { } animProbeHook = null; }
+            animProbeT0 = DateTime.UtcNow.Ticks;
+            long t0 = animProbeT0;
+            animProbeHook = delegate (object s, EventArgs e)
+            {
+                double ms = (DateTime.UtcNow.Ticks - t0) / (double)TimeSpan.TicksPerMillisecond;
+                RectangleGeometry rg = paperFace;
+                double x = rg == null ? -1 : rg.Rect.X;
+                double w = rg == null ? -1 : rg.Rect.Width;
+                Log.W("animprobe ms=" + ms.ToString("0.0", CultureInfo.InvariantCulture) +
+                      " x=" + x.ToString("0.0", CultureInfo.InvariantCulture) +
+                      " w=" + w.ToString("0.0", CultureInfo.InvariantCulture));
+                if (ms > 800)
+                {
+                    try { CompositionTarget.Rendering -= animProbeHook; } catch { }
+                    animProbeHook = null;
+                    Log.W("animprobe done");
+                }
+            };
+            CompositionTarget.Rendering += animProbeHook;
+        }
+
+        private void AnimRect(RectangleGeometry g, Rect to, Duration d, KeySpline ks)
+        {
+            try
+            {
+                Rect from = g.Rect;
+                g.Rect = to;                                  // base value first: FillBehavior.Stop must not snap back
+                RectAnimationUsingKeyFrames kf = new RectAnimationUsingKeyFrames();
+                kf.Duration = d;
+                kf.FillBehavior = FillBehavior.Stop;
+                kf.KeyFrames.Add(new LinearRectKeyFrame(from, KeyTime.FromTimeSpan(TimeSpan.Zero)));
+                kf.KeyFrames.Add(new SplineRectKeyFrame(to, KeyTime.FromTimeSpan(d.TimeSpan), ks));
+                // Native compositor cadence, not a hard-coded 60 Hz cap.
+                g.BeginAnimation(RectangleGeometry.RectProperty, kf);
+            }
+            catch (Exception e) { Log.W("paper anim fail " + e.Message); try { g.BeginAnimation(RectangleGeometry.RectProperty, null); g.Rect = to; } catch { } }
+        }
+
+        private void ApplyCardClip()
+        {
+            if (cardCanvas == null) return;
+            double o = theme == "transparent" ? 0 : 1;
+            // R1 (rollback): the clip is the card's OWN rounded outline again - r=18, offset by the 1 DIP ring
+            // border. The "window rect minus four corner wedges" geometry and the gutter-inflated washVeil are
+            // gone: they put card-coloured paint into the 4 DIP gutter, which read as a second rounded rectangle
+            // 4 DIP outside the first one (user shot: two arcs per corner with a visible step). The gutter belongs
+            // to the projection, and the projection now comes from a window-sized carrier (BuildShadowCarrier)
+            // that has the room to paint outside the card box while staying inside the window - the same place
+            // Folia's css box-shadow 0 1px 3px rgba(0,0,0,.45) is painted.
+            // The queue-open state keeps this same single rounded outline; there is no 6 DIP seam bridging.
+            cardCanvas.Clip = new RectangleGeometry(new Rect(-o, -o, CardW, CardH), Radius, Radius);
+            ApplyVeilCover();
+        }
+
+        // R1: no gutter inflation any more. Every wash layer, the scrim included, ends at the card outline.
+        private void ApplyVeilCover()
+        {
+            if (washVeil == null) return;
+            washVeil.Margin = new Thickness(0);
+        }
+
+        // S1: the projection carrier. The effect owner is 602x184 (the whole window), its only child is an exact
+        // copy of the card outline (594x176, r=18, at 4,4), and that child is deliberately OPAQUE: a WPF
+        // DropShadowEffect casts nothing from a transparent source. cardHost draws on top at the same 4,4 rect
+        // with the same 594x176 and the same r=18, so the source is completely hidden and only its blurred,
+        // 1 DIP down-shifted copy survives - in the gutter, i.e. outside the card and inside the window.
+        // #7b: one place that owns the projection, so the transition can switch it off and back on.
+        private void ApplyShadowEffect()
+        {
+            if (shadowHost == null) return;
+            shadowHost.Effect = new DropShadowEffect { BlurRadius = 6, ShadowDepth = 1, Direction = 270, Opacity = ShadowOpacity(), Color = Colors.Black };
+        }
+
+        private void BuildShadowCarrier()
+        {
+            shadowShape = new Border();
+            shadowShape.Width = CardW;
+            shadowShape.Height = CardH;
+            shadowShape.Margin = new Thickness(Gutter);
+            // USER 2026-11-10 #2: right-anchored so ApplyPaper() can shrink the carrier's WIDTH and keep its
+            // right edge at 598 - i.e. the projection ends exactly where the clipped card does, instead of
+            // leaving an opaque 594-wide block painting the (now empty) strip.
+            shadowShape.HorizontalAlignment = HorizontalAlignment.Right;
+            shadowShape.CornerRadius = new CornerRadius(Radius);
+            shadowShape.Background = CardBrush();
+            shadowHost = new Border();
+            shadowHost.Width = WinW;
+            shadowHost.Height = WinH;
+            shadowHost.Background = Brushes.Transparent;
+            shadowHost.IsHitTestVisible = false;
+            shadowHost.ClipToBounds = false;
+            // S2: css box-shadow 0 1px 3px rgba(0,0,0,.45):
+            //   offset-y 1px      -> ShadowDepth = 1
+            //   straight down     -> Direction = 270. WPF counts the angle COUNTER-clockwise (0 = right, 90 =
+            //                        up, 180 = left, 270 = down), which is the opposite of the CSS convention.
+            //                        Measured proof (S2/S3, this run): with Direction = 90 the gutter darkened
+            //                        on the TOP and LEFT only (top median 56.6 luma, bottom 0.0), i.e. the
+            //                        shadow was cast up-left; 270 is the value that puts it down-right like
+            //                        css offset-x 0 offset-y +1. The old constant was 270 for this reason.
+            //   blur 3px          -> BlurRadius = 6. Both units are DIP, but the semantics differ:
+            //                        the css blur radius is 2*sigma, while WPF's BlurRadius is the blurring
+            //                        kernel radius. Measured on this card (S3, BlurRadius=3): the gutter
+            //                        darkening is over by 1.6 DIP, i.e. sigma_effective = 0.95 DIP against the
+            //                        css 1.5, and the sd 1.5..3 band reads 1 luma instead of the 5..6 luma
+            //                        Folia's own 0 1px 3px band shows (SPEC V7 note). BlurRadius 6 puts the
+            //                        decay past 3 DIP, which is what the 4 DIP gutter needs; the S3 record
+            //                        carries both curves.
+            //   rgba(0,0,0,.45)   -> Color black, Opacity 0x73/255 (ShadowOpacity())
+            ApplyShadowEffect();
+            shadowHost.Child = shadowShape;
+            Canvas.SetLeft(shadowHost, 0);
+            Canvas.SetTop(shadowHost, 0);
+            surface.Children.Add(shadowHost);
+        }
+
+        private void ApplyStaticGlyphInk()
+        {
+            SetGlyph(btnPrev, "skip-back", A(0.95), true, 1.0);
+            SetGlyph(btnNext, "skip-forward", A(0.95), true, 1.0);
+            SetGlyph(btnQueue, "list-music", A(queueOpen ? 0.96 : 0.56), false, 1.0);
+            SetGlyph(btnMore, "ellipsis", A(0.56), false, 1.0);
+            SetGlyph(btnTheme, "palette", A(0.46), false, 1.0);
+            SetGlyph(btnClose, "x", A(0.46), false, 1.0);
+        }
+
+        private void ApplyTheme()
+        {
+            if (cardHost == null) return;
+            cardHost.Background = CardBrush();
+            ring.BorderBrush = StrokeBrush();
+            // "transparent" must hide only the 1px ring: the ring is the Border that HOLDS
+            // cardCanvas, so collapsing it used to blank the entire card (user report / V1 capture).
+            ring.BorderBrush = theme == "transparent" ? (Brush)Brushes.Transparent : StrokeBrush();            ring.BorderThickness = new Thickness(theme == "transparent" ? 0 : 1);
+            ApplyCardClip();      // K1: the clip has to follow the ring border offset
+            queuePanel.Background = CardBrush();
+            queuePanel.BorderBrush = StrokeBrush();
+            // S1: the projection lives on the carrier now, and its opaque shadow source has to follow the theme.
+            DropShadowEffect dse = shadowHost == null ? null : shadowHost.Effect as DropShadowEffect;
+            if (dse != null) dse.Opacity = ShadowOpacity();
+            if (shadowShape != null) shadowShape.Background = CardBrush();
+            bool cardFace = !HasLyricLine(core.Store.Snapshot());
+            titleTb.Foreground = A(cardFace ? 1.0 : 0.84);
+            artistTb.Foreground = A(cardFace ? 0.58 : 0.46);
+            lyricTb.Foreground = A(PlayingNow() ? 0.95 : 0.62);
+            lyricSubTb.Foreground = A(0.64);
+            if (timeRun != null) timeRun.Foreground = A(0.78);
+            if (timeTotalRun != null) timeTotalRun.Foreground = A(0.38);
+            idleTb.Foreground = A(0.3);
+            trackRect.Fill = A(hover ? 0.16 : 0.11);
+            fillRect.Fill = A(hover ? 1.0 : 0.58);
+            knob.Fill = A(1.0);
+            coverStroke.BorderBrush = Solid(Color.FromArgb(0x24, 0xff, 0xff, 0xff));
+            // wash / shade / veil are one layer set: showing the wash without the scrim is exactly the
+            // white-on-white bug the user photographed (the old line below reset shade to
+            // "visible only when theme==cover", so "wash" rendered a raw bright cover).
+            if (washLayer != null) washLayer.Visibility = WashOn() ? Visibility.Visible : Visibility.Collapsed;
+            if (washShade != null) washShade.Visibility = WashOn() ? Visibility.Visible : Visibility.Collapsed;
+            if (washVeil != null) washVeil.Visibility = WashOn() ? Visibility.Visible : Visibility.Collapsed;
+            ApplyStaticGlyphInk();
+            if (WashOn()) AdaptWashStart("theme=" + theme, 150);
+        }
+
+        // Q: old line out 180ms (opacity 1->0, y 0->-6) -> 20ms gap -> new line in 260ms
+        // cubic-bezier(.2,.8,.2,1) (opacity 0->1, y +6->0). One pair only, no AnimatePresence.
+        private void LyricFade(string oldLine, string newLine, bool playing)
+        {
+            if (lyricOldTb == null || lyricTb == null) { lyricTb.Text = newLine; return; }
+            if (string.IsNullOrEmpty(oldLine))
+            {
+                lyricTb.Text = newLine;
+                lyricTb.Opacity = 1;
+                lyricOldTb.Visibility = Visibility.Collapsed;
+                return;
+            }
+            Log.W("lyric fade out=180ms gap=20ms in=260ms old=" + Core.Trunc(oldLine, 18) + " new=" + Core.Trunc(newLine, 18));
+            lyricOldTb.Text = oldLine;
+            lyricOldTb.Foreground = lyricTb.Foreground;
+            lyricOldTb.Opacity = 1;
+            lyricOldShift.Y = 0;
+            lyricOldTb.Visibility = Visibility.Visible;
+            lyricTb.Text = newLine;
+            lyricTb.Opacity = 0;
+            lyricShift.Y = 6;
+            Duration d1 = new Duration(TimeSpan.FromMilliseconds(180));
+            Anim(lyricOldTb, UIElement.OpacityProperty, 0.0, d1, EaseIn(), TimeSpan.FromMilliseconds(0));
+            Anim(lyricOldShift, TranslateTransform.YProperty, -6, d1, EaseIn(), TimeSpan.FromMilliseconds(0));
+            DispatcherTimer t = new DispatcherTimer();
+            t.Interval = TimeSpan.FromMilliseconds(200);            // 180 + 20ms gap
+            t.Tick += delegate
+            {
+                t.Stop();
+                Duration d2 = new Duration(TimeSpan.FromMilliseconds(260));
+                Anim(lyricTb, UIElement.OpacityProperty, 1.0, d2, Snap(), TimeSpan.FromMilliseconds(0));
+                Anim(lyricShift, TranslateTransform.YProperty, 0, d2, Snap(), TimeSpan.FromMilliseconds(0));
+                DispatcherTimer t2 = new DispatcherTimer();
+                t2.Interval = TimeSpan.FromMilliseconds(290);
+                t2.Tick += delegate { t2.Stop(); lyricOldTb.Visibility = Visibility.Collapsed; };
+                t2.Start();
+            };
+            t.Start();
+        }
+
+        // N1: one place that writes an opacity AND remembers what it should be, so dbg-layout can
+        // report target vs actual instead of only one of them.
+        private void SetOp(UIElement e, double v)
+        {
+            if (e == null) return;
+            litTarget[e] = v;
+            e.Opacity = v;
+        }
+
+        // N3: WPF keeps an Opacity=0 element hit-testable, and a Collapsed ancestor does not stop
+        // IsHitTestVisible on a child. Report what the USER can actually click.
+        private bool EffectiveHit(UIElement e)
+        {
+            if (e == null) return false;
+            Visual v = e;
+            while (v != null && !ReferenceEquals(v, surface))
+            {
+                UIElement ue = v as UIElement;
+                if (ue != null)
+                {
+                    if (!ue.IsHitTestVisible) return false;
+                    FrameworkElement fe = ue as FrameworkElement;
+                    if (fe != null && fe.Visibility != Visibility.Visible) return false;
+                }
+                v = VisualTreeHelper.GetParent(v) as Visual;
+            }
+            return true;
+        }
+
+        private bool PlayingNow()
+        {
+            State s = core.Store.Snapshot();
+            return s != null && s.Playing;
+        }
+
+        private Border findByName(string name)
+        {
+            foreach (UIElement e in cardCanvas.Children) { Border b = e as Border; if (b != null && b.Name == name) return b; }
+            return null;
+        }
+
+        private IEnumerable<Border> ringElements()
+        {
+            yield return btnPrev; yield return btnPlay; yield return btnNext;
+            yield return btnLike; yield return btnLoop; yield return btnQueue; yield return btnMore;
+            yield return btnTheme; yield return btnPin; yield return btnClose;
+        }
+
+        // ---------------------------------------------------------------- data -> visuals
+        public void Attach() { core.Store.Changed += OnChanged; BuildTray(); }   // M1a: tray exists from boot, hidden or not
+
+        private bool refreshDeferred;
+        private void OnChanged(State s)
+        {
+            try
+            {
+                win.Dispatcher.BeginInvoke(new Action(delegate
+                {
+                    // #7d: Refresh() does real layout work (lyric text swap, title Measure, progress repaint,
+                    // sometimes a cover fetch). The state channel posts at 4 Hz, so one of those regularly
+                    // landed in the middle of the 260 ms hover motion - that is the single 25..37 ms frame the
+                    // per-frame probe caught in every transition. The store keeps the newest state anyway, so
+                    // applying it the moment the motion settles is invisible and leaves the animation clean.
+                    if (hoverBusy) { refreshDeferred = true; return; }
+                    Refresh();
+                }));
+            }
+            catch { }
+        }
+
+        public void Refresh()
+        {
+            try { RefreshCore(); }
+            catch (Exception e) { Log.W("refresh fail " + e.GetType().Name + ": " + e.Message + " | " + Core.Trunc(e.StackTrace, 200)); }
+        }
+
+        private void RefreshCore()
+        {
+            if (win == null || cardHost == null) return;
+            State s = core.Store.Snapshot();
+            bool idle = s == null;
+            bool sleeve = SleeveActive();
+            // SetLit/ApplyHoverState own cover and hover visuals. Rebuilding them on every
+            // 250 ms position update used to re-clip the card and re-layout the artist text.
+            bool noCover = s == null || string.IsNullOrEmpty(s.Cover);
+            if (idle && hover) SetLit(false);
+            coverImg.Visibility = Visibility.Visible;
+            coverGhost.Visibility = noCover ? Visibility.Visible : Visibility.Collapsed;
+            idleTb.Visibility = Visibility.Collapsed;          // no debug text in the UI at any state
+            titleTb.Visibility = idle ? Visibility.Collapsed : Visibility.Visible;
+            artistTb.Visibility = idle ? Visibility.Collapsed : Visibility.Visible;
+            lyricTb.Visibility = idle ? Visibility.Collapsed : Visibility.Visible;
+            lyricSubTb.Visibility = idle ? Visibility.Collapsed : Visibility.Visible;
+            if (idle)
+            {
+                lyricTb.Text = "";
+                lyricSubTb.Text = "";
+                lyricOldTb.Visibility = Visibility.Collapsed;
+                PaintProgress(0);
+                if (queueH != 0) { queueH = 0; PositionQueue(); }      // idle must never inflate the window
+                Log.W("idle backend=" + core.Backend + ":" + core.Port + " cdp=" + (core.Cdp != null && core.Cdp.Connected ? 1 : 0));
+                return;
+            }
+            string nextTitle = string.IsNullOrEmpty(s.Title) ? "-" : s.Title;
+            string nextArtist = string.IsNullOrEmpty(s.Artist) ? "" : s.Artist;
+            bool textLayoutChanged = titleTb.Text != nextTitle || artistTb.Text != nextArtist;
+            if (titleTb.Text != nextTitle) titleTb.Text = nextTitle;
+            if (artistTb.Text != nextArtist) artistTb.Text = nextArtist;
+            string newLine = s.Lyrics.Line ?? "";
+            bool lyricModeChanged = string.IsNullOrWhiteSpace(lastLyric) != string.IsNullOrWhiteSpace(newLine);
+            ApplyCoverChoice(false);                              // lyric presence selects line face vs song card
+            if (textLayoutChanged || lyricModeChanged) LayoutTextForState();
+            bool cardMode = !HasLyricLine(s);
+            titleTb.Visibility = Visibility.Visible;
+            artistTb.Visibility = Visibility.Visible;
+            lyricTb.Visibility = cardMode ? Visibility.Collapsed : Visibility.Visible;
+            lyricSubTb.Visibility = cardMode ? Visibility.Collapsed : Visibility.Visible;
+            if (cardMode)
+            {
+                lyricOldTb.Visibility = Visibility.Collapsed;
+                lyricTb.Text = "";
+                lyricSubTb.Text = "";
+                lastLyric = newLine;
+            }
+            else
+            {
+                if (newLine != lastLyric) { LyricFade(lastLyric, newLine, s.Playing); lastLyric = newLine; }
+                else { lyricTb.Text = newLine; lyricTb.Opacity = 1; }
+                lyricSubTb.Text = s.Lyrics.Next ?? "";
+            }
+            lyricTb.Foreground = A(s.Playing ? 0.95 : 0.62);         // Folia paused sung ink = rgba(ink,.62)
+            lyricSubTb.Foreground = A(0.64);                         // remote-second; independent of paused state
+            string tt = State.Fmt(s.Pos);
+            string td = State.Fmt(s.Dur);
+            timeRun.Text = tt;
+            timeTotalRun.Text = " / " + td;
+            ApplyStaticGlyphInk();
+            SetGlyph(btnPlay, s.Playing ? "pause" : "play", A(0.95), true, 1.0);   // transport svg = .95 while lit
+            double svgPlay = s.Playing ? SvgPlayPlaying : SvgPlayPaused;
+            Viewbox pvb = btnPlay.Child as Viewbox;
+            if (pvb != null) { pvb.Width = svgPlay; pvb.Height = svgPlay; }
+            // SPEC 7.1: heart; liked -> fill=currentColor and the #ff5d73 brush (RedBrush()), unliked stroke only.
+            SetGlyph(btnLike, "heart", s.Liked ? RedBrush() : A(0.56), s.Liked, s.Bar.Like ? 1 : 0.35);
+            // F5b: SPEC-remote-motion.md 7.2 verbatim, q = e => e==="off" ? repeat-off : e==="one" ? repeat-1 : repeat.
+            // FOUR loop modes over THREE glyphs: list and shuffle both draw the plain repeat and are told apart by
+            // data-on (here the 0.96 vs 0.56 ink), the dot below and the aria label. The old code invented a fourth
+            // glyph (IconShuffle) and never drew repeat-off, which is why off/one/list really did look alike.
+            SetGlyph(btnLoop, s.Loop == "off" ? "repeat-off" : (s.Loop == "one" ? "repeat-1" : "repeat"),
+                     A(s.Loop == "off" ? 0.56 : 0.96), false, 1.0);
+            SetGlyph(btnPin, win.Topmost ? "pin" : "pin-off", A(0.46), false, 1.0);   // remote-tool default ink = .46
+            bool dot = s.Loop != "off";
+            loopDot.Visibility = dot ? Visibility.Visible : Visibility.Collapsed;
+            if (dot)
+            {
+                loopDot.Fill = s.Loop == "one" ? RedBrush() : A(0.96);
+                Canvas.SetLeft(loopDot, Canvas.GetLeft(btnLoop) + SmallSize / 2 - 1.5);
+                Canvas.SetTop(loopDot, Canvas.GetTop(btnLoop) + SmallSize - 5);
+            }
+            // bar-flags dim the glyph inside the button; the container opacity belongs to data-lit,
+            // otherwise a refresh would overwrite the lit fade and leave the deck visible when compact.
+            double litK = hover ? 1.0 : 0.0;
+            SetOp(btnPlay, litK * (s.Bar.Play ? 1.0 : 0.35));
+            SetOp(btnPrev, litK * (s.Bar.Prev ? 1.0 : 0.35));
+            SetOp(btnNext, litK * (s.Bar.Next ? 1.0 : 0.35));
+            SetOp(btnQueue, litK * (s.Bar.Queue ? 1.0 : 0.35));
+            SetOp(btnLoop, litK * (s.Bar.Loop ? 1.0 : 0.35));
+            SetOp(btnMore, litK);
+            SetOp(btnLike, litK * (s.Bar.Like ? 1.0 : 0.35));
+            SetOp(btnTheme, litK); SetOp(btnPin, litK); SetOp(btnClose, litK);
+            if (timeTb != null) SetOp(timeTb, litK);
+            LoadCover(s.Cover, coverImg, false);
+            LoadCover(s.Cover, washImg, true);
+            if (queueOpen) LayoutQueue(false);
+        }
+
+        private double BarTopForState() { return hover ? ExpBarTop : IdleBarTop; }
+
+        // track 2px -> 3px, fill rgba(ink,.58) -> solid ink when lit
+        private void ApplyLineMetrics(bool lit)
+        {
+            double th = lit ? 3 : 2;
+            double inner = lit ? 6.5 : 7;
+            trackRect.Height = th;
+            fillRect.Height = th;
+            trackRect.Fill = A(lit ? 0.16 : 0.11);
+            fillRect.Fill = lit ? A(1.0) : A(0.58);
+            Canvas.SetTop(trackRect, inner);
+            Canvas.SetTop(fillRect, inner);
+            Canvas.SetTop(knob, inner + th / 2 - 4.5);
+        }
+
+        private UIElement[] HoverTargets()
+        {
+            return new UIElement[] { btnPrev, btnPlay, btnNext, btnLike, btnLoop, btnQueue, btnMore,
+                                     btnTheme, btnPin, btnClose, timeTb, loopDot };   // loopDot is part of the icon row: idle must not leak it
+        }
+
+        // .remote-lit group: enter .22s snap + 80ms delay, exit .32s; deck exit .18s ease-out.
+        private void FadeGroup(bool animate, double to, UIElement[] list)
+        {
+            int ms = to > 0.5 ? (int)LitInMs : 200;          // icons go slightly before the card re-expands
+            TimeSpan delay = TimeSpan.Zero;
+            KeySpline ks = to > 0.5 ? Glide() : Settle();    // #7: one curve for the whole lit group
+            foreach (UIElement e in list)
+            {
+                if (e == null) continue;
+                e.IsHitTestVisible = to > 0.5;                 // invisible == unreachable, no phantom clicks
+                litTarget[e] = to;                                     // N1: what the state says the opacity must be
+                if (animate)
+                {
+                    Anim(e, UIElement.OpacityProperty, to, new Duration(TimeSpan.FromMilliseconds(ms)), ks, delay);
+                    // N1 belt-and-braces: FillBehavior.Stop hands the property back to the local value.
+                    // Re-assert the target after the animation window so nothing can leave the deck at 0
+                    // while the state still says lit (the failure the parent read in the dump).
+                    DispatcherTimer ts = new DispatcherTimer();
+                    double captured = to;
+                    ts.Interval = TimeSpan.FromMilliseconds(ms + delay.TotalMilliseconds + 60);
+                    ts.Tick += delegate { ts.Stop(); e.Opacity = captured; };
+                    ts.Start();
+                }
+                else e.Opacity = to;
+            }
+        }
+
+        private void SetLit(bool on)
+        {
+            if (on == hover) return;
+            hover = on;
+            // L3: the same tick that flips lit records WHEN it flipped, so dbg-pointer can publish the
+            // enter->lit latency. No behaviour change: ApplyHoverState(true) still runs immediately.
+            if (on) { if (insideStartTicks != 0) litAppliedTicks = DateTime.UtcNow.Ticks; }
+            else litAppliedTicks = 0;
+            ApplyHoverState(true);
+        }
+
+        // hover morph (task 3): cover 176->48 inline + tools/time/icon row fade in + progress moves up.
+        // Leaving runs the same animations backwards. Nothing is teleported; the card background is never
+        // repainted white, so there is no flash.
+        private void ApplyHoverState(bool animate)
+        {
+            if (cardCanvas == null) return;
+            long tf0 = DateTime.UtcNow.Ticks;
+            ApplyCoverChoice(true);
+            long tf1 = DateTime.UtcNow.Ticks;
+            ApplyLineMetrics(hover);
+            double to = BarTopForState() - IdleBarTop;
+            // Keep Canvas.Top fixed and animate only the render transform. Unlike Canvas.Top,
+            // TranslateTransform.Y does not invalidate layout for the bar and its siblings every frame.
+            if (animate) Anim(barShift, TranslateTransform.YProperty, to,
+                              new Duration(TimeSpan.FromMilliseconds(hover ? LitInMs : LitOutMs)),
+                              hover ? Glide() : Settle(), TimeSpan.Zero);
+            else if (Math.Abs(barShift.Y - to) > 0.01) barShift.Y = to;
+            hoverBusy = animate;
+            long tf2 = DateTime.UtcNow.Ticks;
+            FadeGroup(animate, hover ? 1.0 : 0.0, HoverTargets());
+            knob.Visibility = hover ? Visibility.Visible : Visibility.Collapsed;
+            Log.W("hovertiming cover=" + ((tf1 - tf0) / TimeSpan.TicksPerMillisecond) +
+                  "ms geom=" + ((tf2 - tf1) / TimeSpan.TicksPerMillisecond) +
+                  "ms fade=" + ((DateTime.UtcNow.Ticks - tf2) / TimeSpan.TicksPerMillisecond) + "ms animate=" + animate);
+            // #7: during the transition the ONLY thing that changes inside the card is the clip rect, so the
+            // rasterised card can be cached once and merely clipped per frame instead of re-rasterising a
+            // 753x230 layered surface 60 times. Cleared when the transition ends (lyrics keep animating then).
+            // #7b: BitmapCache was tried here and made it WORSE - the animated Clip invalidates the cached
+            // bitmap every frame, so the card was rasterised into the cache AND clipped, twice the work.
+            if (cardHost != null) cardHost.CacheMode = null;
+
+            // #7b: the drop shadow is a live BlurEffect over the whole card, re-run on every frame that
+            // invalidates the carrier - and the clip animation invalidates it 60 times per second. The shadow
+            // only ever shows in the 4 DIP gutter, so it is dropped for the length of the transition and put
+            // back when the motion settles (invisible: the carrier sits exactly under the card).
+            if (animate && shadowHost != null) shadowHost.Effect = null;
+
+            // #7c REVERTED: caching the wash layer was measured and did NOT help (frame gaps went from
+            // 16/20/20/29 to 17/25/3/29 - same spread, more work). The wash bitmap is not the bottleneck,
+            // so it stays uncached and the code stays honest about it.
+
+            if (animate)
+            {
+                DispatcherTimer t = new DispatcherTimer();
+                t.Interval = TimeSpan.FromMilliseconds((hover ? LitInMs : LitOutMs) + 40);
+                t.Tick += delegate
+                {
+                    t.Stop();
+                    hoverBusy = false;
+                    ApplyShadowEffect();                                  // #7b: back on once the motion settles
+                    if (washHost != null) washHost.CacheMode = null;      // #7c: live wash again
+                    if (refreshDeferred) { refreshDeferred = false; Refresh(); }   // #7d: the state we skipped
+                    ScheduleDumpRect();
+                };
+                t.Start();
+            }
+            else
+            {
+                if (cardHost != null) cardHost.CacheMode = null;
+                if (washHost != null) washHost.CacheMode = null;
+                if (refreshDeferred) { refreshDeferred = false; Refresh(); }
+                ScheduleDumpRect();
+            }
+        }
+
+        // L4 (latency brief): the bar runs on its OWN clock between state frames, and a frame only ever
+        // CORRECTS it. The old code did interpolate (pos + frameAge/dur), but it re-anchored on the reported
+        // pos every frame - and a frame's pos is always sampled slightly BEFORE it is applied - so every
+        // frame pulled the cursor BACK by that sample age (up to 250ms of song = ~1 DIP here, but visible as
+        // a stutter, and it breaks monotonicity). Now: free-run on the wall clock, snap FORWARD to the truth
+        // whenever the truth is ahead, and snap on a backward jump larger than SnapBackSec (a real seek or a
+        // track change). Small stale-sample lag is never displayed as a backward step; it is absorbed within
+        // one lag window by the next forward snap.
+        private const double SnapBackSec = 1.5;
+        private double localPos = -1;                 // seconds, local clock; -1 = not tracking (paused/idle)
+        private long localPosTicks;
+        private string localPosTrack = "";
+
+        private void TickProgress()
+        {
+            if (seekPreview >= 0) return;
+            if (seekGuardTicks != 0 && DateTime.UtcNow.Ticks < seekGuardTicks) return;   // 800ms: no snapshot overwrite
+            State s = core.Store.Snapshot();
+            if (s == null) return;
+            double r;
+            if (s.Playing && s.Dur > 0)
+            {
+                long nowT = DateTime.UtcNow.Ticks;
+                string track = s.Title + "|" + s.Artist + "|" + s.Dur.ToString("0.###", CultureInfo.InvariantCulture);
+                double reported = s.Pos + (nowT - s.ReceivedTicks) / (double)TimeSpan.TicksPerSecond;
+                if (localPos < 0 || track != localPosTrack) { localPos = reported; localPosTrack = track; }  // first frame / track change
+                else if (reported >= localPos || (localPos - reported) > SnapBackSec) localPos = reported;    // forward correction, or a real backward jump
+                else if (localPosTicks != 0) localPos += (nowT - localPosTicks) / (double)TimeSpan.TicksPerSecond;  // free-run
+                localPosTicks = nowT;
+                if (localPos > s.Dur) localPos = s.Dur;
+                if (localPos < 0) localPos = 0;
+                r = localPos / s.Dur;
+            }
+            else { localPos = -1; localPosTicks = 0; localPosTrack = ""; r = s.Progress01(); }
+            if (r > 1) r = 1;
+            if (r < 0) r = 0;
+            PaintProgress(r);
+        }
+
+        private void PaintProgress(double ratio)
+        {
+            if (barCanvas == null) return;
+            double w = barCanvas.Width > 0 ? barCanvas.Width : barCanvas.ActualWidth;
+            if (w <= 0) return;
+            double x = ratio * w;
+            barRatioLast = ratio;                       // L4 evidence: what the last paint actually drew
+            barPaintTicks = DateTime.UtcNow.Ticks;
+            fillRect.Width = x;
+            Canvas.SetLeft(fillRect, 0);
+            knob.Visibility = (hover && ratio > 0.002) ? Visibility.Visible : Visibility.Collapsed;
+            Canvas.SetLeft(knob, Math.Max(0, x - 4.5));
+            trackRect.Width = w;
+        }
+
+        // ---------------------------------------------------------------- cover fetch (D3)
+        private void LoadCover(string url, Image target, bool wash)
+        {
+            if (target == null) return;
+            if (string.IsNullOrEmpty(url)) { target.Source = null; return; }
+            ImageSource cached;
+            if (CacheGetImage(url, out cached))
+            {
+                if (wash) ApplyWashSource(url);
+                else if (!ReferenceEquals(target.Source, cached)) target.Source = cached;
+                return;
+            }
+            byte[] bytes;
+            if (url.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    int comma = url.IndexOf(',');
+                    string b64 = url.Substring(comma + 1).Replace("\n", "").Replace("\r", "");
+                    byte[] raw = Convert.FromBase64String(b64);
+                    ImageSource src = Decode(raw, wash ? 224 : 220, "data-url");
+                    if (src != null) { CachePutImage(url, src); if (wash) ApplyWashSource(url); else target.Source = src; }
+                }
+                catch (Exception e) { Log.W("cover data fail " + e.Message); }
+                return;
+            }
+            if (CacheGetBytes(url, out bytes))
+            {
+                ImageSource src = Decode(bytes, wash ? 224 : 220, "cache-bytes");
+                if (src != null) { CachePutImage(url, src); if (wash) ApplyWashSource(url); else target.Source = src; return; }
+                // B1 fix (2026-11-10): a cached non-image used to be PERMANENT - every 250ms repaint decoded
+                // the same junk bytes, logged three decoder failures, and kept the PREVIOUS track's cover on
+                // screen (server.log 16:53:22: one text/html 4272B reply -> 496 repeated failures). Evict,
+                // clear the stale bitmap and fall through to a bounded network refetch instead of returning.
+                CacheDrop(url);
+                target.Source = null;
+                int tries;
+                lock (imgGate) { imgRetry.TryGetValue(url, out tries); imgRetry[url] = ++tries; }
+                if (tries >= 2) { Log.W("cover bad-cache give up after " + tries + " refetch " + Core.Trunc(url, 60)); return; }
+                Log.W("cover bad-cache evicted -> refetch #" + tries + " " + Core.Trunc(url, 60));
+            }
+            Uri u;
+            if (!Uri.TryCreate(url, UriKind.Absolute, out u)) { Log.W("cover bad url " + Core.Trunc(url, 80)); return; }
+            if (!u.Scheme.Equals("http") && !u.Scheme.Equals("https")) { Log.W("cover scheme " + u.Scheme); return; }
+            target.Source = null;
+            lock (imgPending)
+            {
+                if (imgPending.Contains(url)) return;                 // already downloading -> do not starve it with duplicates
+                imgPending.Add(url);
+            }
+            Log.W("cover begin " + Core.Trunc(url, 90));
+            // D3: no WebClient/OpenReadAsync (its completion never fired in-process).
+            // Plain HttpWebRequest on a worker thread, hard timeouts, byte cap, every
+            // failure branch logged.
+            string fetchUrl = CdnResize(url);
+            Log.W("cover begin " + Core.Trunc(fetchUrl, 100));
+            string urlVar = url;
+            int widthVar = wash ? 240 : 220;
+            ThreadPool.QueueUserWorkItem(delegate (object o)
+            {
+                byte[] data = null;
+                string err = null;
+                string ctype = null;
+                try
+                {
+                    HttpWebRequest rq = (HttpWebRequest)WebRequest.Create(fetchUrl);
+                    rq.Proxy = null;
+                    rq.Timeout = 12000;
+                    rq.ReadWriteTimeout = 12000;
+                    rq.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) MiniPlayer/1.0";
+                    rq.AllowAutoRedirect = true;
+                    using (HttpWebResponse res = (HttpWebResponse)rq.GetResponse())
+                    {
+                        ctype = res.ContentType;
+                        Log.W("cover http " + (int)res.StatusCode + " " + res.ContentType + " " + res.ContentLength + "B");
+                        using (Stream rs = res.GetResponseStream())
+                        using (MemoryStream ms = new MemoryStream())
+                        {
+                            byte[] buf = new byte[65536];
+                            int got, total = 0;
+                            while ((got = rs.Read(buf, 0, buf.Length)) > 0)
+                            {
+                                ms.Write(buf, 0, got);
+                                total += got;
+                                if (total > 8 * 1024 * 1024) { err = "body-too-big"; break; }        // B5: a truncated body must never be cached
+                            }
+                            if (err == null) data = ms.ToArray();
+                        }
+                    }
+                }
+                catch (Exception e) { err = e.GetType().Name + ": " + e.Message; }
+                lock (imgPending) { imgPending.Remove(urlVar); }
+                if (err != null) { Log.W("cover fail " + Core.Trunc(urlVar, 70) + " :: " + Core.Trunc(err, 140)); return; }
+                if (data == null || data.Length < 100) { Log.W("cover too small " + (data == null ? 0 : data.Length) + " " + Core.Trunc(urlVar, 60)); return; }
+                // B1 root cause (2026-11-10): 200 + >100B used to be enough. The CDN happily answers an error
+                // page with 200 text/html, and that page was cached as the cover forever.
+                bool ctypeOk = ctype != null && ctype.IndexOf("image/", StringComparison.OrdinalIgnoreCase) >= 0;
+                if (!IsImageMagic(data) && !ctypeOk)
+                {
+                    int n;
+                    lock (imgGate) { imgRetry.TryGetValue(urlVar, out n); imgRetry[urlVar] = ++n; }
+                    // bounded: a URL that really is an error page must not be re-fetched on every state frame
+                    Log.W("cover not-image ctype=" + ctype + " " + data.Length + "B tries=" + n + " " + Core.Trunc(urlVar, 70));
+                    return;
+                }
+                CachePutBytes(urlVar, data);
+                Log.W("cover bytes " + data.Length + " " + Core.Trunc(urlVar, 60));
+                // BitmapImage must be decoded on the UI thread: on a pool thread EndInit throws
+                // ArgumentNullException("key"), which is why the old build never showed a cover.
+                try
+                {
+                    win.Dispatcher.BeginInvoke(new Action(delegate
+                    {
+                        ImageSource src = Decode(data, widthVar, "net");
+                        if (src == null) { Log.W("cover decode fail " + Core.Trunc(urlVar, 60)); return; }
+                        CachePutImage(urlVar, src);
+                        Log.W("cover ok " + data.Length + "B " + ((BitmapSource)src).PixelWidth + "x" + ((BitmapSource)src).PixelHeight + " " + Core.Trunc(urlVar, 70));
+                        ApplyCoverSources(urlVar);
+                    }));
+                }
+                catch (Exception e2) { Log.W("cover dispatch " + e2.Message); }
+            });
+        }
+
+        // 126.net art covers: ask the CDN for a 300px variant instead of the 8 MB original.
+        private static string CdnResize(string url)
+        {
+            try
+            {
+                if (url.IndexOf("param=", StringComparison.OrdinalIgnoreCase) >= 0) return url;
+                Uri u;
+                if (!Uri.TryCreate(url, UriKind.Absolute, out u)) return url;
+                string host = u.Host.ToLowerInvariant();
+                if (host.EndsWith("music.126.net") || host.EndsWith("music.163.com") || host.EndsWith("nic.xin"))
+                    return url + (url.IndexOf('?') >= 0 ? "&" : "?") + "param=300y300";
+            }
+            catch { }
+            return url;
+        }
+
+        private void ApplyCoverSources(string url)
+        {
+            ImageSource src;
+            if (!CacheGetImage(url, out src)) return;
+            if (coverImg != null) coverImg.Source = src;                       // sleeve keeps the raw art
+            // D5: wash only. L2: never bake on the UI thread here - a warm pipeline is snapped in exactly as
+            // before, a cold one is baked off-thread by ApplyWashSource below and cross-faded in.
+            ImageSource pipeCached;
+            lock (satGate) { satCache.TryGetValue(WashSpecKey(url), out pipeCached); }
+            if (washImg != null && pipeCached != null) washImg.Source = pipeCached;
+            if (coverBlank != null) coverBlank.Visibility = Visibility.Collapsed;
+            if (coverGhost != null) coverGhost.Visibility = Visibility.Collapsed;
+            ApplyWashSource(url);
+            DumpRect();
+        }
+
+        // Three decode strategies, first one wins. BitmapImage(StreamSource + DecodePixelWidth)
+        // threw ArgumentNullException("key") on this machine, so BitmapFrame is tried first.
+        // track change: the wash cross-fades (600ms settle) instead of swapping in one frame
+        private void ApplyWashSource(string url)
+        {
+            if (washImg == null) return;
+            ImageSource src;
+            if (!CacheGetImage(url, out src)) return;
+            string key = WashSpecKey(url);
+            ImageSource sat;
+            lock (satGate) { satCache.TryGetValue(key, out sat); }
+            if (sat != null)
+            {
+                // The same decoded + blurred bitmap stays mounted until the cover really changes.
+                // Reassigning it at 4 Hz also restarted the veil path and dirtied the whole card.
+                if (lastWashUrl != url || !ReferenceEquals(washImg.Source, sat)) ApplyWashBaked(url, sat);
+                return;
+            }
+            // L2: cold cover -> bake on a POOL thread and swap on the UI thread when it is ready. The card
+            // keeps showing the previous wash meanwhile, which is exactly what the 600ms crossfade is for.
+            // Before this the same work ran inline here and blocked the UI thread for ~137ms (blurMs=137
+            // ui=1 thread=1), which is the freeze the 100ms heartbeat was added to prove.
+            lock (satGate) { if (washBakePending.Contains(key)) return; washBakePending.Add(key); }
+            double radius = washRadius, satK = washSat; string stage = washStage;   // captured: a /ctl/wash tune mid-bake must not mix specs
+            Log.W("wash bake off-thread start r=" + F(radius) + " s=" + F(satK) + " stage=" + stage + " " + Core.Trunc(url, 60));
+            // L2-fix: a POOL thread is MTA, and BlurEffect/RenderTargetBitmap creation throws
+            // InvalidOperationException ("thread must be STA") there - BlurBake caught it and returned the
+            // UNBLURRED source, so every cold cover since the off-thread move baked blurMs=1 garbage
+            // (server.log 17:04:45.876 wash blur-bake fail). A dedicated STA thread keeps the UI thread
+            // free (the whole point of L2) AND keeps the blur alive.
+            Thread bakeT = new Thread(delegate ()
+            {
+                BitmapSource baked = BakeWash(src, radius, satK, stage);
+                lock (satGate) { washBakePending.Remove(key); SatPut(key, baked); }
+                if (baked == null) return;
+                try
+                {
+                    win.Dispatcher.BeginInvoke(new Action(delegate
+                    {
+                        State cur = core.Store.Snapshot();
+                        if (cur != null && !string.IsNullOrEmpty(cur.Cover) && cur.Cover != url)
+                        {
+                            Log.W("wash bake stale dropped url=" + Core.Trunc(url, 50) + " now=" + Core.Trunc(cur.Cover, 50));
+                            return;
+                        }
+                        ApplyWashBaked(url, baked);
+                    }));
+                }
+                catch (Exception e2) { Log.W("wash bake dispatch " + e2.Message); }
+            });
+            bakeT.SetApartmentState(ApartmentState.STA);
+            bakeT.IsBackground = true;
+            bakeT.Name = "wash-bake";
+            bakeT.Start();
+        }
+
+        // The UI-thread half of the wash swap: the old inline body verbatim (same crossfade, same 640ms tail,
+        // same AdaptWashStart reasons), fed by an already-baked bitmap instead of baking here.
+        private void ApplyWashBaked(string url, ImageSource sat)
+        {
+            if (washImg == null || sat == null) return;
+            if (lastWashUrl == null || lastWashUrl == url)
+            {
+                washImg.Source = sat; washImg.Opacity = 1; washImg2.Source = sat; washImg2.Opacity = 0;
+                lastWashUrl = url;
+                AdaptWashStart("cover", 150);
+                return;
+            }
+            washImg2.Source = sat;
+            washImg2.Opacity = 0;
+            Anim(washImg2, UIElement.OpacityProperty, 1.0, new Duration(TimeSpan.FromMilliseconds(600)), Settle(), TimeSpan.FromMilliseconds(0));
+            DispatcherTimer t = new DispatcherTimer();
+            t.Interval = TimeSpan.FromMilliseconds(640);
+            ImageSource captured = sat;
+            t.Tick += delegate
+            {
+                t.Stop();
+                // FIX (kept): this used to assign the RAW decoded bitmap, so every track change left the wash
+                // running without the CSS saturate() step at all (the D5 boost was silently dropped after the
+                // crossfade, which is most of the "grey wash" the user photographs). It now re-assigns the
+                // SAME baked+saturated bitmap the crossfade used, so the settled pixels equal the faded ones.
+                washImg.Source = captured;
+                washImg.Opacity = 1;
+                washImg2.Opacity = 0;
+                AdaptWashStart("cover crossfade", 200);      // measure the settled composite
+            };
+            t.Start();
+            lastWashUrl = url;
+            Log.W("wash crossfade -> " + Core.Trunc(url, 60));
+        }
+
+        // B2 fix (2026-11-10): decodeWidth was declared on Decode() and never referenced, so every cover was
+        // decoded at full size (a 1000x1000 cover = 4MB of pixels) and then kept forever. Downscale before cache.
+        // #8 (BUG, self-inflicted in the B1 fix): the CDN serves PNG behind a ".jpg" URL and labels it
+        // image/jpg - p4.music.126.net/.../109951169687449885.jpg?param=300y300 returns 163948 bytes starting
+        // 89 50 4E 47. The first guard only accepted the JPEG SOI, so it rejected real covers, left the card
+        // with no cover at all, and re-downloaded 163 KB on every state frame. Accept every container WIC can
+        // decode, and treat "content type says image" as a second independent vote.
+        private static bool IsImageMagic(byte[] d)
+        {
+            if (d == null || d.Length < 12) return false;
+            if (d[0] == 0xFF && d[1] == 0xD8) return true;                                     // JPEG
+            if (d[0] == 0x89 && d[1] == 0x50 && d[2] == 0x4E && d[3] == 0x47) return true;     // PNG
+            if (d[0] == 0x47 && d[1] == 0x49 && d[2] == 0x46) return true;                     // GIF
+            if (d[0] == 0x42 && d[1] == 0x4D) return true;                                     // BMP
+            if (d[0] == 0x52 && d[1] == 0x49 && d[2] == 0x46 && d[3] == 0x46 &&
+                d[8] == 0x57 && d[9] == 0x45 && d[10] == 0x42 && d[11] == 0x50) return true;   // WEBP
+            return false;
+        }
+
+        private static BitmapSource FitDecode(BitmapSource bs, int w)
+        {
+            if (bs == null || w <= 0 || bs.PixelWidth <= w) return bs;
+            try
+            {
+                double k = w / (double)bs.PixelWidth;
+                TransformedBitmap tb = new TransformedBitmap(bs, new ScaleTransform(k, k));
+                tb.Freeze();
+                return tb;
+            }
+            catch { return bs; }
+        }
+
+        private ImageSource Decode(byte[] data, int decodeWidth, string tag)
+        {
+            try
+            {
+                using (MemoryStream ms = new MemoryStream(data))
+                {
+                    BitmapSource bs = BitmapFrame.Create(ms, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
+                    bs.Freeze();
+                    bs = FitDecode(bs, decodeWidth);
+                    Log.W("decode ok(frame," + tag + ") " + bs.PixelWidth + "x" + bs.PixelHeight);
+                    return bs;
+                }
+            }
+            catch (Exception e) { Log.W("decode fail(frame," + tag + ") " + e.GetType().Name + " " + e.Message); }
+            try
+            {
+                using (MemoryStream ms = new MemoryStream(data))
+                {
+                    BitmapImage bi = new BitmapImage();
+                    bi.BeginInit();
+                    bi.CacheOption = BitmapCacheOption.OnLoad;
+                    if (decodeWidth > 0) bi.DecodePixelWidth = decodeWidth;
+                    bi.StreamSource = ms;
+                    bi.EndInit();
+                    bi.Freeze();
+                    Log.W("decode ok(image," + tag + ")");
+                    return bi;
+                }
+            }
+            catch (Exception e2) { Log.W("decode fail(image," + tag + ") " + e2.GetType().Name + " " + e2.Message); }
+            try
+            {
+                using (MemoryStream ms = new MemoryStream(data))
+                {
+                    JpegBitmapDecoder jd = new JpegBitmapDecoder(ms, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
+                    BitmapSource bs = jd.Frames[0];
+                    bs.Freeze();
+                    Log.W("decode ok(jpeg," + tag + ")");
+                    return bs;
+                }
+            }
+            catch (Exception e3) { Log.W("decode fail(jpeg," + tag + ") " + e3.GetType().Name + " " + e3.Message); return null; }
+        }
+
+        // ---------------------------------------------------------------- persistence / diagnostics
+        private void GrabHwnd()
+        {
+            try
+            {
+                hwnd = new WindowInteropHelper(win).Handle;
+                int d = ResolveDpi(hwnd);
+                if (d != dpi) { dpi = d; phys = dpi / 96.0; }
+                Log.W("hwnd=" + hwnd + " dpi=" + dpi);
+                HookWndProcOnce();
+            }
+            catch (Exception e) { Log.W("hwnd fail " + e.Message); }
+        }
+
+        // ================================================== MOUSE-INPUT DIAGNOSTIC (real click reaches nothing)
+        // Three independent probes, folded into ONE log line so a single real click is enough evidence:
+        //   1. tunnel PreviewMouseDown on the window root (handledEventsToo)  -> did WPF see the button at all
+        //   2. WM_LBUTTONDOWN/UP on the HWND through HwndSource.AddHook        -> did Windows deliver it to THIS window
+        //   3. VisualTreeHelper.HitTest at that point + 8-level ancestor chain -> which object ate it, and why
+        // Also reachable without a mouse: /ctl/hit:<dipX>,<dipY>.
+        private int wmDownCount, wmUpCount, wmNcCount;
+        private HwndSource inputHook;
+
+        private bool OsVisible()
+        {
+            try { return hwnd != IntPtr.Zero && (Win.GetWindowLongPtr(hwnd, -16).ToInt64() & 0x10000000L) != 0; }
+            catch { return false; }
+        }
+
+        private void HookWndProcOnce()
+        {
+            if (hwnd == IntPtr.Zero || inputHook != null) return;
+            try
+            {
+                inputHook = HwndSource.FromHwnd(hwnd);
+                if (inputHook == null) { Log.W("mouse-diag hook source=null hwnd=" + hwnd); return; }
+                inputHook.AddHook(WndProcDiag);
+                Log.W("mouse-diag hook attached hwnd=" + hwnd + " osVis=" + OsVisible() + " ex=0x" + Win.GetExStyle(hwnd).ToString("X8"));
+            }
+            catch (Exception eh) { Log.W("mouse-diag hook fail " + eh.GetType().Name + " " + eh.Message); }
+        }
+
+        private IntPtr WndProcDiag(IntPtr h, int msg, IntPtr w, IntPtr l, ref bool handledOut)
+        {
+            if (msg == 0x0201 || msg == 0x0202)          // WM_LBUTTONDOWN / WM_LBUTTONUP
+            {
+                long lp = l.ToInt64();
+                int px = (int)(short)(lp & 0xFFFF), py = (int)(short)((lp >> 16) & 0xFFFF);
+                if (msg == 0x0201) wmDownCount++; else wmUpCount++;
+                Log.W("mouse-diag WM " + (msg == 0x0201 ? "LBUTTONDOWN " : "LBUTTONUP  ") + "clientPt=" + px + "," + py +
+                      " n=" + wmDownCount + "/" + wmUpCount + " osVis=" + OsVisible() +
+                      " ex=0x" + Win.GetExStyle(h).ToString("X8") + " lit=" + hover + " topmost=" + win.Topmost);
+            }
+            else if (msg == 0x0084) wmNcCount++;          // WM_NCHITTEST: count only, it fires on every move
+            return IntPtr.Zero;
+        }
+
+        private void DiagPreviewDown(object sender, MouseButtonEventArgs e)
+        {
+            try { LogHitProbe(e.GetPosition(win), "wm", e.Source, e.OriginalSource); }
+            catch (Exception eh) { Log.W("mouse-diag throw " + eh.GetType().Name + " " + eh.Message); }
+        }
+
+        private void LogHitProbe(Point p, string from, object src, object orig)
+        {
+            POINT cp = new POINT();
+            bool got = hwnd != IntPtr.Zero && Win.GetCursorPos(out cp);
+            RECT rr = new RECT();
+            bool gotR = hwnd != IntPtr.Zero && Win.GetWindowRect(hwnd, out rr);
+            HitTestResult hr = null;
+            try { hr = VisualTreeHelper.HitTest(win, p); }
+            catch (Exception eh) { Log.W("mouse-diag HitTest throw " + eh.GetType().Name + " " + eh.Message); }
+            Visual hv = hr == null ? null : hr.VisualHit as Visual;
+            // full z-order list at that point (top first) - answers "what is covering what"
+            ListString zc = new ListString();
+            try
+            {
+                VisualTreeHelper.HitTest(win, null, new HitTestResultCallback(delegate (HitTestResult res)
+                {
+                    Visual v = res.VisualHit as Visual;
+                    zc.Add((v == null ? "-" : v.GetType().Name + ":" + NameOf(v) + ":" + KeyAtVisual(v)));
+                    return zc.Count() < 6 ? HitTestResultBehavior.Continue : HitTestResultBehavior.Stop;
+                }), new PointHitTestParameters(p));
+            }
+            catch (Exception ez) { zc.Add("THROW:" + ez.GetType().Name); }
+            StringBuilder sb = new StringBuilder();
+            sb.Append("mouse-diag ").Append(from)
+              .Append(" dip=").Append(F(p.X)).Append(",").Append(F(p.Y))
+              .Append(" phys=").Append(got ? cp.X + "," + cp.Y : "?")
+              .Append(" rectPhys=").Append(gotR ? rr.Left + "," + rr.Top + "," + (rr.Right - rr.Left) + "x" + (rr.Bottom - rr.Top) : "?")
+              .Append(" osVis=").Append(OsVisible() ? "T" : "F")
+              .Append(" winVis=").Append(win.IsVisible ? "T" : "F")
+              .Append(" topmost=").Append(win.Topmost ? "T" : "F")
+              .Append(" ex=").Append(hwnd == IntPtr.Zero ? "-" : "0x" + Win.GetExStyle(hwnd).ToString("X8"))
+              .Append(" lit=").Append(hover ? "T" : "F")
+              .Append(" wmNc=").Append(wmNcCount).Append(" wmDown=").Append(wmDownCount)
+              .Append(" hit=").Append(hv == null ? "NULL" : hv.GetType().Name)
+              .Append(" hitName=").Append(NameOf(hv))
+              .Append(" keyOfHit=").Append(KeyAtVisual(hv))
+              .Append(" keyAtPoint=").Append(KeyAtPoint(p))
+              .Append(" src=").Append(src == null ? "-" : src.GetType().Name + "/" + NameOf(src))
+              .Append(" orig=").Append(orig == null ? "-" : orig.GetType().Name + "/" + NameOf(orig))
+              .Append(" zlist=").Append(zc.Joint("|"))
+              .Append(" chain=");
+            Visual c = hv;
+            for (int i = 0; i < 8 && c != null; i++)
+            {
+                UIElement ue = c as UIElement;
+                FrameworkElement fe = c as FrameworkElement;
+                sb.Append("L").Append(i).Append("=").Append(c.GetType().Name)
+                  .Append("{name=").Append(NameOf(c))
+                  .Append(",hitvis=").Append(ue == null ? "-" : (ue.IsHitTestVisible ? "T" : "F"))
+                  .Append(",vis=").Append(fe == null ? "-" : fe.Visibility.ToString())
+                  .Append(",op=").Append(ue == null ? "-" : F(ue.Opacity))
+                  .Append(",bg=").Append(BgOf(c))
+                  .Append("} ");
+                c = VisualTreeHelper.GetParent(c) as Visual;
+            }
+            Log.W(sb.ToString());
+        }
+
+        private static string NameOf(object o)
+        {
+            FrameworkElement fe = o as FrameworkElement;
+            if (fe == null) return "-";
+            string s = fe.Name;
+            if (string.IsNullOrEmpty(s)) s = fe.Tag == null ? "" : fe.Tag.ToString();
+            return string.IsNullOrEmpty(s) ? "-" : s;
+        }
+
+        private string KeyAtVisual(Visual v)
+        {
+            for (int i = 0; i < 14 && v != null; i++)
+            {
+                foreach (KeyValuePair<string, Border> kv in hits)
+                    if (ReferenceEquals(kv.Value, v)) return kv.Key;
+                if (ReferenceEquals(v, surface)) break;
+                v = VisualTreeHelper.GetParent(v) as Visual;
+            }
+            return "no-key";
+        }
+
+        // which registered key's OWN layout box contains this window-DIP point (independent of hit testing)
+        private string KeyAtPoint(Point p)
+        {
+            foreach (KeyValuePair<string, Border> kv in hits)
+            {
+                double[] bb = WinBox(kv.Value);
+                if (p.X >= bb[0] && p.X < bb[0] + bb[2] && p.Y >= bb[1] && p.Y < bb[1] + bb[3]) return kv.Key;
+            }
+            if (barCanvas != null)
+            {
+                double[] bb = WinBox(barCanvas);
+                if (p.X >= bb[0] && p.X < bb[0] + bb[2] && p.Y >= bb[1] && p.Y < bb[1] + bb[3]) return "bar";
+            }
+            return "no-key";
+        }
+
+        private static string BgOf(Visual v)
+        {
+            Border b = v as Border; if (b != null) return BgName(b.Background);
+            Panel pn = v as Panel; if (pn != null) return BgName(pn.Background);
+            TextBlock t = v as TextBlock; if (t != null) return BgName(t.Background);
+            ContentControl cc = v as ContentControl; if (cc != null) return BgName(cc.Background);
+            return "n/a";
+        }
+        private static string BgName(Brush br)
+        {
+            if (br == null) return "null";
+            SolidColorBrush s = br as SolidColorBrush;
+            if (s != null) return "a" + s.Color.A;
+            return br.GetType().Name;
+        }
+
+        // tiny string-bag helper so the diagnostic stays one method with no extra allocations of note
+        private sealed class ListString
+        {
+            private readonly List<string> items = new List<string>();
+            public void Add(string s) { items.Add(s); }
+            public int Count() { return items.Count; }
+            public string Joint(string sep) { return string.Join(sep, items.ToArray()); }
+        }
+
+        // P0 diagnostic entry point: /ctl/dbg-pointer. Reads the cursor (allowed, not injection) and dumps
+        // the whole lit/hit-test chain in one log line + refreshes winrect.json, so the verdict can be made
+        // without a foreground window and without touching the mouse or keyboard.
+        public void DbgPointer()
+        {
+            try
+            {
+                bool inside = InsideFresh();          // M2: same judge as the poll, no fourth rect
+                bool got = insideCursorOk, gotR = insideRectOk;
+                POINT pt = insidePt;
+                RECT r = insideRect;
+                bool overStrip = OverStrip(inside);
+                State s = core.Store.Snapshot();
+                long now = DateTime.UtcNow.Ticks;
+                long age = lastInsideTicks == 0 ? -1 : (now - lastInsideTicks) / TimeSpan.TicksPerMillisecond;
+                bool focusVisible = tabFocusSeen && win.IsKeyboardFocusWithin;
+                bool lit = ComputeLit();      // N5: identical to the poll and to dbg-pointer's JSON
+                Log.W("dbg-pointer cursor=" + (got ? pt.X + "," + pt.Y : "GETCURSORFAIL") +
+                      " rectPhys=" + (gotR ? r.Left + "," + r.Top + "," + r.Right + "," + r.Bottom : "GETRECTFAIL") + " rendered=" + renderedSeen +
+                      " rectDip=" + F(win.Left) + "," + F(win.Top) + "," + F(win.Left + win.Width) + "," + F(win.Top + win.Height) +
+                      " dpi=" + dpi + " phys=" + phys.ToString("0.###", CultureInfo.InvariantCulture) +
+                      " inside=" + inside + " strip=" + overStrip);
+                Log.W("dbg-pointer preconditions clickThrough=" + core.Cfg.ClickThrough + " trans=" + transparentNow +
+                      " idle(state==null)=" + (s == null) + " pointerInside=" + pointerInside + " insideAgeMs=" + age +
+                      " litLeaveMs=" + LitLeaveMs + " tabFocusSeen=" + tabFocusSeen + " keyboardFocus=" + win.IsKeyboardFocusWithin +
+                      " focusVisible=" + focusVisible + " litOverride=" + litOverride + " litComputed=" + lit +
+                      " hover(lit applied)=" + hover + " coverState=" + coverState + " queueOpen=" + queueOpen + " queueH=" + F(queueH));
+                Log.W("dbg-pointer deck " + DeckState(btnPrev) + " " + DeckState(btnPlay) + " " + DeckState(btnNext) + " " +
+                      DeckState(btnLike) + " " + DeckState(btnLoop) + " " + DeckState(btnQueue) + " " + DeckState(btnMore));
+                Log.W("dbg-pointer tools " + DeckState(btnTheme) + " " + DeckState(btnPin) + " " + DeckState(btnClose) +
+                      " time=" + DeckState(timeTb) + " bar=" + (barCanvas == null ? "-" : barCanvas.Visibility + "/" + barCanvas.IsHitTestVisible + "/" + F(barCanvas.Opacity)) +
+                      " pollRunning=" + (poll != null && poll.IsEnabled) + " pollIntervalMs=" + (poll == null ? -1 : poll.Interval.TotalMilliseconds) +
+                      " autoQueueRunning=" + (autoQueue != null && autoQueue.IsEnabled));
+                DumpRect();
+            }
+            catch (Exception e) { Log.W("dbg-pointer fail " + e.Message); }
+        }
+
+        // R1+R2: one-line JSON self-report, callable with the window hidden and without any input.
+        public string DebugProbe(string verb)
+        {
+            try
+            {
+                if (!win.Dispatcher.CheckAccess())
+                    return (string)win.Dispatcher.Invoke(new Func<string>(delegate { return DebugProbeCore(verb); }));
+                return DebugProbeCore(verb);
+            }
+            catch (Exception e) { return "{\"ok\":false,\"err\":\"DebugProbe " + (e.Message ?? "").Replace("\"", "'") + "\"}"; }
+        }
+
+        private string DebugProbeCore(string verb)
+        {
+            if (verb == "dbg-layout") return DbgLayout();
+            if (verb == "dbg-mask") return DbgMask();   // H1: clip/mask/radius dump for the corner-bite diagnosis
+            // T1c: re-arm the probe budget without restarting the process.
+            if (verb.StartsWith("dbg-probe-reset"))
+            {
+                int budget = 30;
+                int colon = verb.IndexOf(':');
+                if (colon > 0) int.TryParse(verb.Substring(colon + 1), NumberStyles.Integer, CultureInfo.InvariantCulture, out budget);
+                return ResetProbe(budget);
+            }
+            // T1b: the desktop DPI is live, not startup-frozen (the game can flip 2560x1440@125% to
+            // 1920x1440@100% under a hidden window). Re-resolve before reporting anything.
+            int dNow = ResolveDpi(hwnd);
+            if (dNow > 0 && dNow != dpi) { dpi = dNow; phys = dpi / 96.0; Log.W("dbg dpi re-resolved=" + dpi + " phys=" + F(phys)); }
+            bool vis = win.IsVisible;
+            // M2: same judge, same rect as the 80ms poll. vis is a reporting guard only (a hidden card is
+            // never clickable); it must not silently swap the rect that produced "inside".
+            bool insideRaw = InsideFresh();
+            bool inside = vis && insideRaw;
+            POINT pt = insidePt;
+            RECT r = insideRect;
+            bool got = insideCursorOk, gotR = insideRectOk;
+            bool overStrip = OverStrip(insideRaw);
+            State s = core.Store.Snapshot();
+            long now = DateTime.UtcNow.Ticks;
+            long age = lastInsideTicks == 0 ? -1 : (now - lastInsideTicks) / TimeSpan.TicksPerMillisecond;
+            bool focusVisible = tabFocusSeen && win.IsKeyboardFocusWithin;
+            bool lit = ComputeLit();                    // N5: the same call the 80ms poll makes
+            bool preNoCt = litPreNoClickThrough, preNotIdle = litPreNotIdle, prePointer = litPrePointerOrFocus;
+            probeTicks = now; probeBudget--;
+            // L2/L3/L4 evidence fields. Read-only: none of them feeds a decision, they only make the three
+            // latencies the brief asks about measurable from one HTTP GET.
+            string gapSeries;
+            double[] gap = UiGap(30000, 12, out gapSeries);
+            double litLat = (litAppliedTicks != 0 && insideStartTicks != 0 && litAppliedTicks >= insideStartTicks)
+                          ? (litAppliedTicks - insideStartTicks) / (double)TimeSpan.TicksPerMillisecond : -1;
+            double knobX = knob == null ? -1 : Canvas.GetLeft(knob) + 4.5;
+            // T1b: the primary rect fields follow rectSource; the raw HWND value stays beside them.
+            double[] dr = SrcRect(r, gotR);
+            double rectRight = dr[0] + dr[2], rectBottom = dr[1] + dr[3];
+            string j = new JsonWriter().Begin()
+                .B("ok", true).Str("verb", "dbg-pointer")
+                .Str("at", DateTime.Now.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture))
+                .Num("cursorPhysX", got ? pt.X : -1).Num("cursorPhysY", got ? pt.Y : -1)
+                .Str("rectSource", RectSource())
+                .Str("rectSourceDetail", RectSourceDetail())
+                .Str("rectPhys", F(dr[0]) + "," + F(dr[1]) + "," + F(rectRight) + "," + F(rectBottom))
+                .Num("rectPhysW", dr[2]).Num("rectPhysH", dr[3])
+                .Num("rectDipW", dr[2] / phys).Num("rectDipH", dr[3] / phys)
+                .Str("rectHwndPhys", gotR ? r.Left + "," + r.Top + "," + r.Right + "," + r.Bottom : "FAIL")
+                // M2: the two names an outside reader must be able to compare, straight from the judge.
+                .Str("rectUsedForInside", rectUsedForInside)
+                .Str("rectHwndPhysFromJudge", rectHwndPhysStr)
+                .Str("insideSource", insideSource)
+                .Num("insideAgeFreshMs", (DateTime.UtcNow.Ticks - insideStampTicks) / TimeSpan.TicksPerMillisecond)
+                .Num("rectHwndW", gotR ? r.Right - r.Left : -1).Num("rectHwndH", gotR ? r.Bottom - r.Top : -1)
+                .B("renderedSeen", renderedSeen)
+                .Str("rectDipRequested", F(win.Width) + "x" + F(win.Height))
+                .Str("rectPhysComputed", F(win.Width * phys) + "x" + F(win.Height * phys))
+                .Str("winDipRect", F(win.Left) + "," + F(win.Top) + "," + F(win.Left + win.Width) + "," + F(win.Top + win.Height))
+                .B("windowVisible", vis).Num("dpi", dpi).Num("physPerDip", phys)
+                .B("inside", inside).B("overStrip", overStrip)
+                .B("clickThroughCfg", core.Cfg.ClickThrough).B("transparentNow", transparentNow)
+                .B("winActive", win.IsActive).B("keyboardFocusWithin", win.IsKeyboardFocusWithin)
+                .B("tabFocusSeen", tabFocusSeen).B("focusVisible", focusVisible)
+                .B("pre_noClickThrough", preNoCt).B("pre_notIdle", preNotIdle).B("pre_pointerOrFocus", prePointer)
+                .B("idle", s == null).B("lit", lit).B("litApplied", hover).Str("litReason", litReason)
+                .B("sleeve", coverState == CoverState.Sleeve)
+                .B("dataLitTarget", lit).B("dataIdleTarget", s == null).B("dataSleeveTarget", s == null || coverState == CoverState.Sleeve)
+                .Str("coverState", coverState.ToString().ToLowerInvariant()).Str("theme", theme)
+                // M2: "pointerInside" is now the LIVE sample (it used to be the latch, which is why it said
+                // true while "inside" said false). The latch that produces the 800ms hold is published under
+                // its own name.
+                .B("pointerInside", insideRaw).B("pointerInsideLatch", pointerInside).B("cursorInsideNow", cursorInsideNow)
+                .Num("insideAgeMs", age).Num("litLeaveMs", LitLeaveMs)
+                .Num("litOverride", litOverride).B("hoverApplied", hover)
+                .B("pollRunning", poll != null && poll.IsEnabled)
+                .Num("pollIntervalMs", poll == null ? -1 : poll.Interval.TotalMilliseconds)
+                .Num("lastPollAgoMs", lastPollTicks == 0 ? -1 : (now - lastPollTicks) / TimeSpan.TicksPerMillisecond)
+                .Num("timersBuilt", timersBuilt ? 1 : 0)
+                .B("autoQueueRunning", autoQueue != null && autoQueue.IsEnabled)
+                .Num("queueOpen", queueOpen ? 1 : 0).Num("queueH", queueH)
+                .Num("queueSinceOpenMs", queueOpen ? QueueSinceMs() : -1)
+                .Num("queueCollapseSinceMs", queueCollapseSince)
+                .Num("queueCollapseAgoMs", queueCollapseTicks == 0 ? -1 : (now - queueCollapseTicks) / TimeSpan.TicksPerMillisecond)
+                .Str("queueStateSource", queueStateSource)
+                .Num("probeBudgetLeft", probeBudget)
+                // ---- L2: UI-thread heartbeat, last 30s -------------------------------------------------
+                .Num("uiGapMaxMs", gap[0]).Num("uiGapAvgMs", gap[1]).Num("uiGapSamples", gap[2])
+                .Str("uiGapLast", gapSeries).Num("heartTicks", heartTicks)
+                // ---- L3: pointer-entered -> lit-applied, measured in-app -------------------------------
+                .Num("litLatencyMs", litLat)
+                .Num("insideStartAgoMs", insideStartTicks == 0 ? -1 : (now - insideStartTicks) / (double)TimeSpan.TicksPerMillisecond)
+                .Num("litAppliedAgoMs", litAppliedTicks == 0 ? -1 : (now - litAppliedTicks) / (double)TimeSpan.TicksPerMillisecond)
+                // ---- L4: the bar's local clock, so continuity is checkable without a screenshot --------
+                .Num("barRatio", barRatioLast)
+                .Num("barWidthDip", barCanvas == null ? -1 : (barCanvas.Width > 0 ? barCanvas.Width : barCanvas.ActualWidth))
+                .Num("barFillDip", fillRect == null ? -1 : fillRect.Width)
+                .Num("barKnobXDip", knobX).Num("barKnobXPhys", knobX < 0 ? -1 : knobX * phys)
+                .Num("barPaintAgoMs", barPaintTicks == 0 ? -1 : (now - barPaintTicks) / (double)TimeSpan.TicksPerMillisecond)
+                .Num("barLocalPos", localPos).B("barInterp", localPos >= 0)
+                .B("noForegroundNeeded", true).End().ToString();
+            Log.W("dbg-pointer " + j);
+            return j;
+        }
+
+        // R2: rendered bounds of every interactive node, window-relative DIP, with hit/opacity/visibility.
+        private string DbgLayout()
+        {
+            // N2: a window that has never been shown has never been measured, so its
+            // RenderSize is 0 and the numbers below would be slot values. Drive one layout pass
+            // over the surface at the current size; showing the window re-lays it out anyway.
+            if (!renderedSeen && surface != null)
+            {
+                try
+                {
+                    double hh = WinH + queueH;
+                    surface.Measure(new Size(WinW, hh));
+                    surface.Arrange(new Rect(0, 0, WinW, hh));
+                    layoutForced = true;
+                    Log.W("dbg-layout forced measure/arrange " + WinW + "x" + hh);
+                }
+                catch (Exception le) { Log.W("dbg-layout arrange fail " + le.Message); }
+            }
+            // N5: dbg-layout reports the same lit words as dbg-pointer / winrect.json.
+            bool litNow = ComputeLit();
+            // M2: dbg-layout is where the test harness reads its click coordinates from, so it must publish
+            // exactly the rect the inside judge used. No fourth GetWindowRect call here any more.
+            bool insideL = InsideFresh();
+            double[] drL = ReportRectPhys();
+            int dL = ResolveDpi(hwnd);
+            if (dL > 0 && dL != dpi) { dpi = dL; phys = dpi / 96.0; }
+            StringBuilder b = new StringBuilder();
+            b.Append("{\"ok\":true,\"verb\":\"dbg-layout\",\"at\":\"").Append(DateTime.Now.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture)).Append("\",");
+            b.Append("\"lit\":").Append(litNow ? "true" : "false")
+             .Append(",\"litApplied\":").Append(hover ? "true" : "false")
+             .Append(",\"litOverride\":").Append(litOverride.ToString(CultureInfo.InvariantCulture))
+             .Append(",\"litReason\":\"").Append(litReason).Append("\"")
+             .Append(",\"idle\":").Append(core.Store.Snapshot() == null ? "true" : "false")
+             .Append(",\"coverState\":\"").Append(coverState.ToString().ToLowerInvariant()).Append("\",");
+            // boundsDip below are window-relative DIP; multiply by physPerDip and add originPhysX/Y for the screen point.
+            b.Append("\"dpi\":").Append(dpi.ToString(CultureInfo.InvariantCulture))
+             .Append(",\"physPerDip\":").Append(F(phys))
+             .Append(",\"rectSource\":\"").Append(RectSource()).Append("\"")
+             .Append(",\"originPhysX\":").Append(F(drL[0])).Append(",\"originPhysY\":").Append(F(drL[1]))
+             .Append(",\"rectPhysW\":").Append(F(drL[2])).Append(",\"rectPhysH\":").Append(F(drL[3])).Append(",");
+            // M2: the same two names as dbg-pointer, so a coordinate verdict and an inside verdict can be
+            // cross-checked against one rectangle.
+            b.Append("\"inside\":").Append(insideL ? "true" : "false")
+             .Append(",\"pointerInsideLatch\":").Append(pointerInside ? "true" : "false")
+             .Append(",\"rectHwndPhys\":\"").Append(rectHwndPhysStr).Append("\"")
+             .Append(",\"rectUsedForInside\":\"").Append(rectUsedForInside).Append("\"").Append(",");
+            b.Append("\"renderedSeen\":").Append(renderedSeen ? "true" : "false").Append(",\"layoutForced\":").Append(layoutForced ? "true" : "false").Append(",\"geometryUsable\":").Append((renderedSeen || layoutForced) ? "true" : "false").Append(",");
+            b.Append("\"elements\":[");
+            bool first = true;
+            foreach (KeyValuePair<string, Border> kv in hits)
+            {
+                if (!first) b.Append(',');
+                first = false;
+                b.Append(ElementJson(kv.Key, kv.Value));
+            }
+            string[] more = new string[] { "bar", "coverHost", "titleTb", "artistTb", "lyricTb", "lyricOldTb", "lyricSubTb", "queuePanel", "knob", "trackRect" };
+            foreach (string k in more)
+            {
+                UIElement e = k == "bar" ? (UIElement)barCanvas : k == "coverHost" ? coverHost : k == "titleTb" ? titleTb :
+                              k == "artistTb" ? artistTb : k == "lyricTb" ? lyricTb : k == "lyricOldTb" ? lyricOldTb :
+                              k == "lyricSubTb" ? lyricSubTb : k == "queuePanel" ? queuePanel : k == "knob" ? knob : (UIElement)trackRect;
+                if (!first) b.Append(',');
+                first = false;
+                b.Append(ElementJson(k, e));
+            }
+            b.Append("]}");
+            string j = b.ToString();
+            Log.W("dbg-layout " + Core.Trunc(j, 1400));
+            return j;
+        }
+
+        // Window-relative DIP box assembled from Canvas offsets + the parent chain + the element RenderTransform.
+        // TransformToVisual needs an arranged tree; a hidden window is not arranged, so this walks it by hand.
+        private double[] WinBox(FrameworkElement fe)
+        {
+            double x = 0, y = 0, sx = 1, sy = 1;
+            try
+            {
+                double cx = Canvas.GetLeft(fe), cy = Canvas.GetTop(fe);
+                if (!double.IsNaN(cx)) x += cx;
+                if (!double.IsNaN(cy)) y += cy;
+                Visual v = fe;
+                while (v != null && !ReferenceEquals(v, surface))
+                {
+                    FrameworkElement fe2 = v as FrameworkElement;
+                    if (fe2 != null)
+                    {
+                        Transform t = fe2.RenderTransform;
+                        if (t != null)
+                        {
+                            Matrix m = t.Value;                       // Media.Matrix carries M11/M22, not ScaleX/ScaleY
+                            x = x * m.M11 + m.OffsetX;
+                            y = y * m.M22 + m.OffsetY;
+                            sx *= m.M11; sy *= m.M22;
+                        }
+                    }
+                    Border b = v as Border;
+                    if (b != null) { x += b.BorderThickness.Left + b.Padding.Left; y += b.BorderThickness.Top + b.Padding.Top; }
+                    DependencyObject po = VisualTreeHelper.GetParent(v);
+                    FrameworkElement pe = po as FrameworkElement;
+                    if (pe != null)
+                    {
+                        double px = Canvas.GetLeft(pe), py = Canvas.GetTop(pe);
+                        if (!double.IsNaN(px)) x += px;
+                        if (!double.IsNaN(py)) y += py;
+                    }
+                    v = po as Visual;
+                }
+            }
+            catch { }
+            double w = !double.IsNaN(fe.Width) && fe.Width > 0 ? fe.Width : (fe.ActualWidth > 0 ? fe.ActualWidth : fe.MaxWidth);
+            double h = !double.IsNaN(fe.Height) && fe.Height > 0 ? fe.Height : (fe.ActualHeight > 0 ? fe.ActualHeight : 0);
+            TextBlock tb = fe as TextBlock;
+            if (h <= 0 && tb != null) h = tb.LineHeight;
+            if (w <= 0 && tb != null) w = tb.MaxWidth;
+            return new double[] { x, y, w * sx, h * sy };
+        }
+
+        // T1d: winrect.json used to publish "lyricOldOpacity: 1" while dbg-layout said the same node was
+        // Collapsed and unclickable. Both are true of different numbers; the fix is to emit the SAME object
+        // through the SAME function on both sides instead of a hand-picked field subset.
+        private string LyricObj()
+        {
+            StringBuilder sb = new StringBuilder();
+            sb.Append('{');
+            AppendLyricElt(sb, "lyricTb", lyricTb);
+            AppendLyricElt(sb, "lyricOldTb", lyricOldTb);
+            AppendLyricElt(sb, "lyricSubTb", lyricSubTb);
+            sb.Append('}');
+            return sb.ToString();
+        }
+        private void AppendLyricElt(StringBuilder sb, string key, TextBlock tb)
+        {
+            if (sb.Length > 0 && sb[sb.Length - 1] != '{') sb.Append(',');
+            sb.Append(JsonWriter.Encode(key)).Append(':').Append(ElementJson(key, (UIElement)tb));
+        }
+
+        private string ElementJson(string key, UIElement e)
+        {
+            FrameworkElement fe = e as FrameworkElement;
+            string geo = "null";
+            bool arranged = false;
+            if (fe != null)
+            {
+                try
+                {
+                    arranged = (renderedSeen || layoutForced) && fe.RenderSize.Width > 0;   // N2: a real RenderSize, not a slot value
+                    double[] bb = WinBox(fe);
+                    double w = bb[2], h = bb[3];
+                    if (double.IsInfinity(w) || double.IsNaN(w)) w = -1;      // N2: never emit Infinity
+                    if (double.IsInfinity(h) || double.IsNaN(h)) h = -1;
+                    geo = "{\"x\":" + F(bb[0]) + ",\"y\":" + F(bb[1]) + ",\"w\":" + F(w) + ",\"h\":" + F(h) + "}";
+                }
+                catch (Exception ex) { geo = "{\"err\":\"" + ex.GetType().Name + "\"}"; }
+            }
+            double tgt = -1;
+            if (e != null) { double tv; if (litTarget.TryGetValue(e, out tv)) tgt = tv; }   // absent == not a lit-group member, NOT 0
+            return "{\"key\":\"" + key + "\",\"boundsDip\":" + geo +
+                   ",\"arranged\":" + (arranged ? "true" : "false") +
+                   ",\"hit\":" + (e == null ? "null" : (EffectiveHit(e) ? "true" : "false")) +
+                   ",\"hitRaw\":" + (e == null ? "null" : (e.IsHitTestVisible ? "true" : "false")) +
+                   ",\"actualOpacity\":" + (e == null ? "-1" : F(e.Opacity)) +
+                   ",\"targetOpacity\":" + (tgt < 0 ? "null" : F(tgt)) +
+                   ",\"effectiveOpacity\":" + (fe == null ? "-1" : F(EffOpacity(fe))) +
+                   ",\"visibleChain\":" + (fe != null && VisChain(fe) ? "true" : "false") +
+                   ",\"visibility\":\"" + (fe == null ? "-" : fe.Visibility.ToString()) + "\"}";
+        }
+
+        private string DeckState(FrameworkElement e)
+        {
+            if (e == null) return "null";
+            UIElement u = e as UIElement;
+            return e.GetType().Name + "[" + e.Visibility + "/hit=" + (u == null ? "?" : u.IsHitTestVisible.ToString()) +
+                   "/op=" + F(u == null ? -1 : u.Opacity) + "/pos=" + F(Canvas.GetLeft(e)) + "," + F(Canvas.GetTop(e)) + "]";
+        }
+
+        private void SchedulePosSave()
+        {
+            if (posSave == null)
+            {
+                posSave = new DispatcherTimer();
+                posSave.Interval = TimeSpan.FromMilliseconds(300);        // WINDOW_STATE_SAVE_DEBOUNCE_MS
+                posSave.Tick += delegate { posSave.Stop(); SavePos(); };
+            }
+            posSave.Stop();
+            posSave.Start();
+        }
+
+        private DispatcherTimer rectSave;
+        private void ScheduleDumpRect()
+        {
+            if (rectSave == null)
+            {
+                rectSave = new DispatcherTimer();
+                rectSave.Interval = TimeSpan.FromMilliseconds(300);
+                rectSave.Tick += delegate
+                {
+                    rectSave.Stop();
+                    if (hoverBusy || shifting) { rectSave.Interval = TimeSpan.FromMilliseconds(120); rectSave.Start(); return; }
+                    rectSave.Interval = TimeSpan.FromMilliseconds(300);
+                    DumpRect();
+                };
+            }
+            rectSave.Stop();
+            rectSave.Start();
+        }
+
+        // SPEC 1.2 initial position (DIP maths on the work area)
+        private double[] InitialPosition()
+        {
+            RECT wa = Win.WorkAreaAt(1, 1);
+            double wadipW = wa.Right / phys - wa.Left / phys;
+            double wadipH = wa.Bottom / phys - wa.Top / phys;
+            double xa = wa.Left / phys, ya = wa.Top / phys;
+            double legacyX = xa + Math.Floor((wadipW - 428) / 2);
+            double x = Math.Max(xa, legacyX - 174);
+            double y = ya + Math.Floor((wadipH - WinH) / 2);
+            return new double[] { x, y };
+        }
+
+        private void RestorePos()
+        {
+            double[] saved = Position.Load(dpi, phys);
+            double left, top;
+            if (saved != null)
+            {
+                s_posL = saved[0]; s_posT = saved[1]; s_posDpi = dpi;
+                left = saved[0];
+                top = saved[1];
+                Log.W("restore saved pos " + left.ToString("0.#", CultureInfo.InvariantCulture) + "," + top.ToString("0.#", CultureInfo.InvariantCulture));
+            }
+            else
+            {
+                double[] ini = InitialPosition();
+                left = ini[0];
+                top = ini[1];
+                Log.W("initial pos formula x=" + left.ToString("0.#", CultureInfo.InvariantCulture) + " y=" + top.ToString("0.#", CultureInfo.InvariantCulture));
+            }
+            double[] cl = Position.Clamp(left, top, WinW, WinH + queueH, phys);
+            win.Left = cl[0];
+            win.Top = cl[1];
+            s_posL = cl[0]; s_posT = cl[1]; s_posDpi = dpi;      // N4: the monitor under this point is the one that owns our DPI
+            SavePos();
+        }
+
+        private void SavePos()
+        {
+            if (double.IsNaN(win.Left) || double.IsNaN(win.Top)) return;
+            try { Position.Save(win.Left, win.Top, dpi, phys); } catch { }
+        }
+
+        private double PhysicalLeft()
+        {
+            RECT r;
+            if (hwnd != IntPtr.Zero && Win.GetWindowRect(hwnd, out r)) return r.Left;
+            return win.Left * phys;
+        }
+        private double PhysicalTop()
+        {
+            RECT r;
+            if (hwnd != IntPtr.Zero && Win.GetWindowRect(hwnd, out r)) return r.Top;
+            return win.Top * phys;
+        }
+
+        public void DumpRect()
+        {
+            try
+            {
+                if (hwnd == IntPtr.Zero) GrabHwnd();
+                // R1: a --hide cold start never reaches ContentRendered, so the DPI resolved at Build()
+                // can still be the 96 default. Re-read it from the HWND on every dump tick, otherwise the
+                // rect / strip / inside maths and winrect.json are all in the wrong unit.
+                if (hwnd != IntPtr.Zero)
+                {
+                    // T1b: resolve on every dump, hidden included. ResolveDpi itself refuses to trust the
+                    // never-rendered HWND and falls back to the monitor under the saved spot, which is the
+                    // live value after the desktop scale changed underneath a hidden window.
+                    int d2 = ResolveDpi(hwnd);
+                    if (d2 != dpi) { dpi = d2; phys = dpi / 96.0; Log.W("dpi re-resolved hwnd=" + hwnd + " dpi=" + d2 + " phys=" + phys.ToString("0.###", CultureInfo.InvariantCulture)); }
+                }
+                // M2: the dump refreshes the ONE judge and publishes that rectangle, so winrect.json can no
+                // longer describe a box that never decided a click. rectHwndPhys == rectUsedForInside here.
+                bool insideW = InsideFresh();
+                RECT r = insideRect;
+                bool ok = insideRectOk;
+                if (!ok) { if (!rectFailLogged) { rectFailLogged = true; Log.W("GetWindowRect failed hwnd=" + hwnd + " (logged once per process)"); } }
+                else rectFailLogged = false;
+                int pw = ok ? r.Right - r.Left : 0;
+                int ph = ok ? r.Bottom - r.Top : 0;
+                double[] dr = ReportRectPhys();
+                bool litNow = ComputeLit();
+                // T1d: one helper for both reporters, so winrect.json and dbg-layout cannot disagree.
+                string lyricGroup = LyricObj();
+                Paths.WriteText(Paths.Runtime("winrect.json"),
+                    new JsonWriter().Begin()
+                        .Num("left", dr[0]).Num("top", dr[1])
+                        .Num("width", dr[2]).Num("height", dr[3])
+                        .Num("widthDip", dr[2] / phys).Num("heightDip", dr[3] / phys)
+                        .Str("rectSource", RectSource())
+                        .Str("rectSourceDetail", RectSourceDetail())
+                        .Num("rectHwndW", pw).Num("rectHwndH", ph)
+                        .Str("rectHwndPhys", ok ? r.Left + "," + r.Top + "," + r.Right + "," + r.Bottom : "FAIL")
+                        .Str("rectUsedForInside", rectUsedForInside)
+                        .Str("insideSource", insideSource)
+                        .Num("actualWidth", win.ActualWidth).Num("actualHeight", win.ActualHeight)
+                        .Num("windowWidth", win.Width).Num("windowHeight", win.Height)
+                        .Num("designWidth", WinW).Num("designHeight", WinH)
+                        .Num("dpi", dpi).Num("scale", 1).Num("physPerDip", phys)
+                        .Num("visible", win.IsVisible ? 1 : 0)
+                        .Num("topmost", win.Topmost ? 1 : 0)
+                        .Num("clickThrough", transparentNow ? 1 : 0)
+                        .Num("queueOpen", queueOpen ? 1 : 0)
+                        .Num("queueHeight", queueH)
+                        // M3: same numbers the auto-collapse timer used for its since= log line.
+                        .Num("queueSinceOpenMs", queueOpen ? QueueSinceMs() : -1)
+                        .Num("queueCollapseSinceMs", queueCollapseSince)
+                        .Num("queueCollapseAgoMs", queueCollapseTicks == 0 ? -1 : (DateTime.UtcNow.Ticks - queueCollapseTicks) / TimeSpan.TicksPerMillisecond)
+                        .Str("queueStateSource", queueStateSource)
+                        .Str("queueDir", queueDown ? "down" : "up")
+                        .Str("coverState", coverState.ToString().ToLowerInvariant())
+                        .Str("theme", theme)
+                        .Num("lyricOpacity", lyricTb == null ? -1 : lyricTb.Opacity)
+                        .Num("lyricOldOpacity", lyricOldTb == null ? -1 : lyricOldTb.Opacity)
+                        .Num("lyricOldVis", (lyricOldTb != null && lyricOldTb.Visibility == Visibility.Visible) ? 1 : 0)
+                        .Str("lyricOldVisName", lyricOldTb == null ? "-" : lyricOldTb.Visibility.ToString())
+                        .Num("lyricOldEffective", lyricOldTb == null ? -1 : EffOpacity(lyricOldTb))
+                        .Kv("lyricGroup").Raw(lyricGroup)      // T1d: byte-identical to dbg-layout's elements[]
+                        .Num("lyricShiftY", lyricShift == null ? -1 : lyricShift.Y)
+                        .Num("lyricOldShiftY", lyricOldShift == null ? -1 : lyricOldShift.Y)
+                        .Str("lyricLine", lyricTb == null ? "" : Core.Trunc(lyricTb.Text, 28))
+                        .Str("lyricOldLine", lyricOldTb == null ? "" : Core.Trunc(lyricOldTb.Text, 28))
+                        .Str("lyricSub", lyricSubTb == null ? "" : Core.Trunc(lyricSubTb.Text, 28))
+                        .Num("veilAlpha", veilAlpha)
+                        .Num("veilMeasured", lastWashMeasured)
+                        .Num("washRadius", washRadius)
+                        .Num("washSat", washSat)
+                        .Str("washStage", washStage)
+                        .Num("washTargetLive", washTargetLive)
+                        .Num("queueOpenedAgoMs", T(queueOpenTicks))
+                        .Num("queueSettledAgoMs", T(queueSettledTicks))
+                        .Num("queueHoverAgoMs", T(queueHoverTicks))
+                        .Num("queueMsOpen", queueOpen ? T(queueOpenTicks) : -1)
+                        .Num("fMeMs", 6000)
+                        .Num("lit", litNow ? 1 : 0)
+                        .Num("litApplied", hover ? 1 : 0)
+                        .Str("litReason", litReason)
+                        .Num("pointerInside", insideW ? 1 : 0)
+                        .Num("inside", insideW ? 1 : 0)
+                        .Num("pointerInsideLatch", pointerInside ? 1 : 0)
+                        .Num("insideAgeMs", lastInsideTicks == 0 ? -1 : (DateTime.UtcNow.Ticks - lastInsideTicks) / TimeSpan.TicksPerMillisecond)
+                        .Num("deckPlayHit", (btnPlay != null && btnPlay.IsHitTestVisible) ? 1 : 0)
+                        .Num("deckPlayOp", btnPlay == null ? -1 : btnPlay.Opacity)
+                        .Num("toolsOp", btnTheme == null ? -1 : btnTheme.Opacity)
+                        .Num("pollOn", (poll != null && poll.IsEnabled) ? 1 : 0)
+                        .Num("pollIntervalMs", poll == null ? -1 : poll.Interval.TotalMilliseconds)
+                        .Num("lastPollAgoMs", lastPollTicks == 0 ? -1 : (DateTime.UtcNow.Ticks - lastPollTicks) / TimeSpan.TicksPerMillisecond)
+                        .Num("litOverride", litOverride)
+                        .B("ok", true).End().ToString());
+                DumpHotspots();
+            }
+            catch (Exception e) { Log.W("dumprect " + e.Message); }
+        }
+
+        private void DumpHotspots()
+        {
+            try
+            {
+                Dictionary<string, Point> hs = new Dictionary<string, Point>();
+                try { surface.UpdateLayout(); } catch { }        // rows inside the ScrollViewer need a pass before PointToScreen
+                foreach (KeyValuePair<string, Border> kv in hits)
+                {
+                    Border b = kv.Value;
+                    if (b == null || !b.IsVisible) continue;
+                    Point screen = b.PointToScreen(new Point(b.ActualWidth / 2, b.ActualHeight / 2));
+                    hs[kv.Key] = screen;
+                }
+                if (barCanvas != null && barCanvas.IsVisible)
+                    hs["bar"] = barCanvas.PointToScreen(new Point(barCanvas.ActualWidth / 2, 10));
+                StringBuilder b2 = new StringBuilder();
+                b2.Append('{');
+                bool first = true;
+                foreach (KeyValuePair<string, Point> kv in hs)
+                {
+                    if (!first) b2.Append(',');
+                    first = false;
+                    b2.Append(JsonWriter.Encode(kv.Key)).Append(":[")
+                      .Append(kv.Value.X.ToString("0.##", CultureInfo.InvariantCulture)).Append(',')
+                      .Append(kv.Value.Y.ToString("0.##", CultureInfo.InvariantCulture)).Append(']');
+                }
+                b2.Append('}');
+                Hotspots = hs;
+                Paths.WriteText(Paths.Runtime("hotspots.json"), b2.ToString());
+            }
+            catch (Exception e) { Log.W("hotspots " + e.Message); }
+        }
+
+        public string HotspotsText() { return Paths.ReadText(Paths.Runtime("hotspots.json")) ?? "{}"; }
+
+        // ============================================================ M1a (manual on/off brief): tray icon
+        // The card has no taskbar entry by default (config taskbar=false + WS_EX_TOOLWINDOW), so once it was
+        // hidden the user had NO manual way back - the root of the "I want to close AND open it myself" ask.
+        // The tray is the primary "manual ON" path: the icon exists from boot (window hidden or not),
+        // double-click = Show, menu = show/hide, open NCM (focus if running, else start the mini-window .lnk),
+        // quit. WinForms NotifyIcon comes from the GAC; build.ps1 now references System.Windows.Forms and
+        // System.Drawing. Everything is fully qualified here to avoid WPF type collisions.
+        private System.Windows.Forms.NotifyIcon trayIcon;
+
+        private void BuildTray()
+        {
+            try
+            {
+                if (trayIcon != null) return;
+                System.Windows.Forms.NotifyIcon ti = new System.Windows.Forms.NotifyIcon();
+                ti.Icon = MakeTrayIcon();
+                ti.Text = "NCM Mini \u5C0F\u7A97 - \u53CC\u51FB\u663E\u793A / \u53F3\u952E\u83DC\u5355";
+                System.Windows.Forms.ContextMenuStrip menu = new System.Windows.Forms.ContextMenuStrip();
+                menu.Items.Add("\u663E\u793A/\u9690\u85CF", null, delegate { try { Toggle(); Log.W("tray menu showhide -> visible=" + IsVisible); } catch (Exception e) { Log.W("tray toggle fail " + e.Message); } });
+                menu.Items.Add("\u6253\u5F00\u7F51\u6613\u4E91", null, delegate { OpenNcm("tray-menu"); });
+                menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
+                menu.Items.Add("\u9000\u51FA", null, delegate { Log.W("tray menu quit -> Quit()"); try { Quit(); } catch (Exception e) { Log.W("tray quit fail " + e.Message); } });
+                ti.ContextMenuStrip = menu;
+                ti.DoubleClick += delegate { Log.W("tray doubleclick -> Show()"); Show(); };
+                ti.Visible = true;
+                trayIcon = ti;
+                Log.W("tray created visible=True icon=inproc-32px doubleClick=Show menu=showhide|openNcm|quit pid=" + Core.ProcessId());
+            }
+            catch (Exception e) { Log.W("tray create FAIL " + e.GetType().Name + " " + e.Message); }
+        }
+
+        // 32x32 tray bitmap drawn in-process (dark disc + white play triangle). No external png dependency,
+        // and the icon glyph DATA in Icons.cs stays untouched (drawn fresh, not read from it).
+        private static System.Drawing.Icon MakeTrayIcon()
+        {
+            System.Drawing.Bitmap bmp = new System.Drawing.Bitmap(32, 32);
+            using (System.Drawing.Graphics g = System.Drawing.Graphics.FromImage(bmp))
+            {
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                g.Clear(System.Drawing.Color.Transparent);
+                using (System.Drawing.SolidBrush bg = new System.Drawing.SolidBrush(System.Drawing.Color.FromArgb(255, 22, 22, 28)))
+                    g.FillEllipse(bg, 1, 1, 29, 29);
+                using (System.Drawing.SolidBrush fg = new System.Drawing.SolidBrush(System.Drawing.Color.FromArgb(255, 255, 255, 255)))
+                    g.FillPolygon(fg, new System.Drawing.PointF[] { new System.Drawing.PointF(12f, 9f), new System.Drawing.PointF(12f, 23f), new System.Drawing.PointF(24f, 16f) });
+            }
+            IntPtr h = bmp.GetHicon();
+            System.Drawing.Icon ic = (System.Drawing.Icon)System.Drawing.Icon.FromHandle(h).Clone();
+            bmp.Dispose();
+            return ic;
+        }
+
+        // Tray "open NCM": running -> bring its main window forward (never clicks an NCM control);
+        // not running -> start the user-level mini-window .lnk (target chain cloudmusic.exe
+        // --remote-debugging-port=9222, see install\README.md section 4).
+        private void OpenNcm(string why)
+        {
+            try
+            {
+                if (Program.NcmRunning())
+                {
+                    foreach (System.Diagnostics.Process p in System.Diagnostics.Process.GetProcessesByName("cloudmusic"))
+                    {
+                        IntPtr h = IntPtr.Zero;
+                        try { h = p.MainWindowHandle; } catch { }
+                        if (h == IntPtr.Zero) continue;
+                        Win.ShowWindow(h, 9);                 // SW_RESTORE
+                        Win.SetForegroundWindow(h);
+                        Log.W("open-ncm why=" + why + " running -> foreground pid=" + p.Id);
+                        return;
+                    }
+                    Log.W("open-ncm why=" + why + " running but no main window handle");
+                    return;
+                }
+                string lnk = NcmMiniLnk();
+                if (lnk == null) { Log.W("open-ncm why=" + why + " not running and no mini lnk found"); return; }
+                System.Diagnostics.Process.Start(lnk);
+                Log.W("open-ncm why=" + why + " started lnk=" + lnk);
+            }
+            catch (Exception e) { Log.W("open-ncm fail " + e.GetType().Name + " " + e.Message); }
+        }
+
+        private static string NcmMiniLnk()
+        {
+            // name = wangyi-yun-yinyue (xiaochuang ban) .lnk via codepoints: no literal CJK bytes in source,
+            // so the csc codepage can never garble it. Two user-level copies exist (docs/STATUS.md section M).
+            string name = "\u7F51\u6613\u4E91\u97F3\u4E50\uFF08\u5C0F\u7A97\u7248\uFF09.lnk";
+            string[] dirs = new string[] {
+                Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory),
+                System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.StartMenu), "Programs"),
+                System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonStartMenu), "Programs") };
+            foreach (string d in dirs)
+            {
+                try { string p = System.IO.Path.Combine(d, name); if (System.IO.File.Exists(p)) return p; } catch { }
+            }
+            return null;
+        }
+
+        private void DisposeTray()
+        {
+            try
+            {
+                if (trayIcon == null) return;
+                trayIcon.Visible = false;                 // hide first: a dead process otherwise leaves a ghost icon
+                trayIcon.Dispose();
+                trayIcon = null;
+                Log.W("tray disposed");
+            }
+            catch (Exception e) { Log.W("tray dispose fail " + e.Message); }
+        }
+
+        // ============================================================ H1 (cover corner-bite brief): mask dump
+        // PrintWindow paints layered-window transparency BLACK, so the bite cannot be seen off the window's
+        // own render - the screen diff does that. This answers the other half: WHICH layer clips/masks what.
+        // Per element: type, visibility, opacity, window-DIP rect (TransformToAncestor when rendered, WinBox
+        // fallback), RenderSize, four corner radii, Clip geometry (type/radii/bounds), OpacityMask (brush
+        // type, drawing bounds, stretch, transforms, mask geometry + its bounds), RenderTransform matrix.
+        private string DbgMask()
+        {
+            if (!renderedSeen && surface != null)
+            {
+                try { surface.Measure(new Size(WinW, WinH + queueH)); surface.Arrange(new Rect(0, 0, WinW, WinH + queueH)); layoutForced = true; }
+                catch { }
+            }
+            StringBuilder b = new StringBuilder();
+            b.Append("{\"ok\":true,\"verb\":\"dbg-mask\",\"at\":\"").Append(DateTime.Now.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture)).Append("\",");
+            b.Append("\"coverState\":\"").Append(coverState.ToString().ToLowerInvariant()).Append("\",\"theme\":\"").Append(theme).Append("\",");
+            b.Append("\"lit\":").Append(ComputeLit() ? "true" : "false").Append(",\"visible\":").Append(win.IsVisible ? "true" : "false").Append(",");
+            b.Append("\"physPerDip\":").Append(F(phys)).Append(",\"elements\":[");
+            bool first = true;
+            FrameworkElement layGrid = coverStroke == null ? null : coverStroke.Child as FrameworkElement;
+            FrameworkElement[] els = new FrameworkElement[] {
+                surface, cardHost, ring, cardCanvas, coverHost, coverStroke, layGrid, coverImg, coverGhost,
+                washLayer, washHost, washImg, washImg2, washShade, washVeil, queuePanel, queueGrid };
+            string[] names = new string[] {
+                "surface", "cardHost", "ring", "cardCanvas", "coverHost", "coverStroke", "sleeveLayGrid", "coverImg", "coverGhost",
+                "washLayer", "washHost", "washImg", "washImg2", "washShade", "washVeil", "queuePanel", "queueGrid" };
+            for (int i = 0; i < els.Length; i++)
+            {
+                if (!first) b.Append(',');
+                first = false;
+                b.Append(MaskElementJson(names[i], els[i]));
+            }
+            b.Append("]}");
+            string j = b.ToString();
+            Log.W("dbg-mask " + Core.Trunc(j, 1900));
+            return j;
+        }
+
+        private string MaskElementJson(string key, FrameworkElement fe)
+        {
+            StringBuilder b = new StringBuilder();
+            b.Append('{').Append("\"key\":").Append(JsonWriter.Encode(key));
+            if (fe == null) { b.Append(",\"null\":true}"); return b.ToString(); }
+            b.Append(",\"type\":\"").Append(fe.GetType().Name).Append('"');
+            b.Append(",\"visibility\":\"").Append(fe.Visibility.ToString()).Append('"');
+            b.Append(",\"opacity\":").Append(F(fe.Opacity));
+            b.Append(",\"renderSize\":[").Append(F(fe.RenderSize.Width)).Append(',').Append(F(fe.RenderSize.Height)).Append(']');
+            b.Append(",\"actualWH\":[").Append(F(fe.ActualWidth)).Append(',').Append(F(fe.ActualHeight)).Append(']');
+            string rectSrc = "transform";
+            double x = -9999, y = -9999;
+            try
+            {
+                GeneralTransform gt = fe.TransformToAncestor(win);
+                Point p0 = gt.Transform(new Point(0, 0));
+                x = p0.X; y = p0.Y;
+            }
+            catch { double[] bb = WinBox(fe); x = bb[0]; y = bb[1]; rectSrc = "winbox"; }
+            b.Append(",\"rectSrc\":\"").Append(rectSrc).Append('"');
+            b.Append(",\"winDipXY\":[").Append(F(x)).Append(',').Append(F(y)).Append(']');
+            Border bd = fe as Border;
+            if (bd != null)
+            {
+                b.Append(",\"cornerTLBR\":[").Append(F(bd.CornerRadius.TopLeft)).Append(',').Append(F(bd.CornerRadius.TopRight))
+                 .Append(',').Append(F(bd.CornerRadius.BottomRight)).Append(',').Append(F(bd.CornerRadius.BottomLeft)).Append(']');
+                b.Append(",\"borderThickness\":[").Append(F(bd.BorderThickness.Left)).Append(',').Append(F(bd.BorderThickness.Top))
+                 .Append(',').Append(F(bd.BorderThickness.Right)).Append(',').Append(F(bd.BorderThickness.Bottom)).Append(']');
+                b.Append(",\"background\":\"").Append(bd.Background == null ? "null" : bd.Background.GetType().Name).Append('"');
+            }
+            b.Append(",\"clipToBounds\":").Append(fe.ClipToBounds ? "true" : "false");
+            Geometry clip = fe.Clip;
+            if (clip == null) b.Append(",\"clip\":null");
+            else
+            {
+                Rect cb = clip.Bounds;
+                RectangleGeometry rg = clip as RectangleGeometry;
+                b.Append(",\"clip\":{\"type\":\"").Append(clip.GetType().Name).Append('"');
+                if (rg != null) b.Append(",\"radiusXY\":[").Append(F(rg.RadiusX)).Append(',').Append(F(rg.RadiusY)).Append(']');
+                b.Append(",\"bounds\":[").Append(F(cb.X)).Append(',').Append(F(cb.Y)).Append(',').Append(F(cb.Width)).Append(',').Append(F(cb.Height)).Append("]}");
+            }
+            Brush om = fe.OpacityMask;
+            if (om == null) b.Append(",\"opacityMask\":null");
+            else
+            {
+                b.Append(",\"opacityMask\":{\"type\":\"").Append(om.GetType().Name).Append('"');
+                DrawingBrush db = om as DrawingBrush;
+                if (db != null && db.Drawing != null)
+                {
+                    Rect gb = db.Drawing.Bounds;
+                    b.Append(",\"drawingBounds\":[").Append(F(gb.X)).Append(',').Append(F(gb.Y)).Append(',').Append(F(gb.Width)).Append(',').Append(F(gb.Height)).Append(']');
+                    b.Append(",\"stretch\":\"").Append(db.Stretch.ToString()).Append('"');
+                    b.Append(",\"transform\":\"").Append(db.Transform == null ? "-" : Core.Trunc(db.Transform.Value.ToString(), 80)).Append('"');
+                    DrawingGroup dg = db.Drawing as DrawingGroup;
+                    if (dg != null && dg.Children.Count >= 1)
+                    {
+                        GeometryDrawing gd = dg.Children[0] as GeometryDrawing;
+                        if (gd != null && gd.Geometry != null)
+                        {
+                            Rect ggb = gd.Geometry.Bounds;
+                            b.Append(",\"geometryBounds\":[").Append(F(ggb.X)).Append(',').Append(F(ggb.Y)).Append(',').Append(F(ggb.Width)).Append(',').Append(F(ggb.Height)).Append(']');
+                            b.Append(",\"geometry\":\"").Append(Core.Trunc(gd.Geometry.ToString(), 240).Replace("\"", "'")).Append('"');
+                        }
+                    }
+                }
+                b.Append('}');
+            }
+            Image img = fe as Image;
+            if (img != null)
+            {
+                b.Append(",\"imgSource\":").Append(img.Source == null ? "null" : JsonWriter.Encode(img.Source.GetType().Name + " " + F(img.Source.Width) + "x" + F(img.Source.Height)));
+                b.Append(",\"imgStretch\":\"").Append(img.Stretch.ToString()).Append('"');
+            }
+            try
+            {
+                Transform rt = fe.RenderTransform;
+                b.Append(",\"renderTransform\":\"").Append(rt == null ? "-" : Core.Trunc(rt.Value.ToString(), 90)).Append('"');
+            }
+            catch { b.Append(",\"renderTransform\":\"err\""); }
+            b.Append('}');
+            return b.ToString();
+        }
+
+        public void UiAction(string verb)
+        {
+            if (verb == null) return;
+            Action a = delegate
+            {
+                if (verb == "hide") Hide();
+                // F2: /ctl/close used to fall through this chain and do NOTHING at all (the verb was never
+                // matched, the caller still got {"ok":true}). It is now the same close as the card's x: Hide().
+                else if (verb == "close") Hide();
+                else if (verb == "show") Show();
+                else if (verb == "toggle") Toggle();
+                else if (verb == "top") Click("pin");
+                else if (verb == "theme") Click("theme");
+                else if (verb == "queue") Click("queue");
+                else if (verb == "quit") Quit();
+                else if (verb == "taskbar") Click("taskbar");
+                else if (verb.StartsWith("taskbar:")) SetTaskbar(verb.EndsWith("on"));
+                else if (verb.StartsWith("cover:")) SetCoverMode(verb.Substring(6));
+                else if (verb == "cover") SetCoverMode(coverMode == "sleeve" ? "card" : (coverMode == "card" ? "line" : "sleeve"));
+                else if (verb == "rect") DumpRect();
+                else if (verb == "animprobe") { animProbe = 6; Log.W("animprobe armed: next " + animProbe + " animated paper changes"); }
+                else if (verb == "dbg-pointer") DbgPointer();
+                else if (verb == "lit:on") { litOverride = 1; pointerInside = true; lastInsideTicks = DateTime.UtcNow.Ticks; ReJudgeLit("lit:on"); }
+                else if (verb == "lit:off") { litOverride = 0; pointerInside = false; ReJudgeLit("lit:off"); }
+                // T1a: auto does not mean "clear the flag" - it means "re-judge right now from the live pointer"
+                else if (verb == "lit:auto") { litOverride = -1; ReJudgeLit("lit:auto"); }
+                else if (verb == "rect:now") DumpRect();
+                else if (verb.StartsWith("wash:")) WashTune(verb.Substring(5));
+                else if (verb.StartsWith("hit:"))
+                {
+                    string[] hp = verb.Substring(4).Split(',');
+                    double hx, hy;
+                    if (hp.Length == 2 && double.TryParse(hp[0], NumberStyles.Float, CultureInfo.InvariantCulture, out hx) &&
+                        double.TryParse(hp[1], NumberStyles.Float, CultureInfo.InvariantCulture, out hy))
+                        LogHitProbe(new Point(hx, hy), "http", null, null);
+                }
+                else if (verb.StartsWith("probegrant")) { probeBudget += 30; Log.W("probe budget +=30 -> " + probeBudget); }
+            };
+            try { win.Dispatcher.BeginInvoke(new Action(a)); } catch { }
+        }
+    }
+}

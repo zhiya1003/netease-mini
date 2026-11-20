@@ -1,0 +1,51 @@
+/*!
+ * ncm-mini bridge v1 — 「小窗」按钮样式
+ * 载入方式: <link href="./hybrid/mini.css" rel="stylesheet">  (见 docs/BRIDGE-NOTES.md)
+ * 只做加法: 不覆盖网易云自身类名, 尺寸与播放条 cmd-button 对齐(24x28 / gap 由 cmd-space 提供)
+ */
+button.ncmmini-btn {
+  -webkit-appearance: none;
+  appearance: none;
+  display: -webkit-inline-box;
+  display: -webkit-inline-flex;
+  display: inline-flex;
+  -webkit-box-align: center;
+  -webkit-align-items: center;
+  align-items: center;
+  -webkit-box-pack: center;
+  -webkit-justify-content: center;
+  justify-content: center;
+  height: 24px;
+  min-width: 34px;
+  padding: 0 6px;
+  margin: 0;
+  border: 1px solid rgba(128, 128, 128, .42);
+  border-radius: 11px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  letter-spacing: 0;
+  cursor: pointer;
+  outline: none;
+  -webkit-user-select: none;
+  user-select: none;
+  opacity: .82;
+  vertical-align: middle;
+}
+button.ncmmini-btn:hover {
+  opacity: 1;
+  border-color: rgba(229, 77, 77, .78);
+  color: #e54d4d;
+}
+button.ncmmini-btn:active { -webkit-transform: translateY(1px); transform: translateY(1px); }
+/* 小窗已在线 / 已点亮 */
+button.ncmmini-btn.ncmmini-on {
+  opacity: 1;
+  border-color: #e54d4d;
+  color: #e54d4d;
+  background: rgba(229, 77, 77, .13);
+}
+/* 找不到 mini.css 时(仅 js)也不能露出难看的默认按钮 */
+button.ncmmini-btn:not([class*="cmd-button"]) { font-family: inherit; }
